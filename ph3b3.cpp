@@ -1,6 +1,4 @@
 #include "ph3b3.h"
-#include <WiFi.h>
-#include <ESPmDNS.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include "config.h"
@@ -9,24 +7,9 @@ void IrisPh3b3::begin(IrisFace* face, const String& host, int port) {
     _face = face;
     _host = host;
     _port = port;
-
-    // Register Iris on the network as "iris.local" so Ph3b3 can find us too.
-    MDNS.begin("iris");
-
-    // Try to resolve Ph3b3 via mDNS.  ESP32's lwIP stack resolves .local names
-    // natively through WiFi.hostByName(); ESPmDNS must be started first.
-    IPAddress resolved;
-    if (WiFi.hostByName(PH3B3_MDNS_HOST, resolved)) {
-        String s = resolved.toString();
-        if (s != "0.0.0.0") {
-            _host = s;
-        }
-    }
-    // If mDNS failed, _host retains the NVS / fallback value.
-
-    // Run the first health check immediately so the face updates without waiting
-    // a full poll interval.
-    _lastMs = millis() - PH3B3_POLL_MS;
+    // ph3b3.local never resolves (Nyx advertises as Nyx.local); skip mDNS entirely
+    // to avoid the 2s+ blocking penalty on every boot.
+    _lastMs = millis() - PH3B3_POLL_MS;   // trigger first check immediately
 }
 
 void IrisPh3b3::update() {
@@ -35,21 +18,30 @@ void IrisPh3b3::update() {
 
     if (_checkHealth()) {
         _face->setState(IrisState::PH3B3_HEALTHY);
+        if (!_greetedOnce) {
+            _face->setBubble("Hello! Ph3b3 is online and ready.");
+            _greetedOnce = true;
+        }
     } else {
         _face->setState(IrisState::PH3B3_UNREACHABLE);
+        _face->clearBubble();
+        _greetedOnce = false;
     }
 }
 
 bool IrisPh3b3::_checkHealth() {
     WiFiClientSecure client;
-    client.setInsecure();   // Ph3b3 uses a self-signed cert; skip verification
+    client.setInsecure();
 
     HTTPClient http;
     String url = "https://" + _host + ":" + String(_port) + "/health";
 
     if (!http.begin(client, url)) return false;
 
-    http.setTimeout(PH3B3_HTTP_TIMEOUT_MS);
+    // setConnectTimeout sets SO_RCVTIMEO on the socket; without it the default
+    // 5 s can race the TLS handshake. http.setTimeout() alone is not enough.
+    http.setConnectTimeout(15000);
+    http.setTimeout(15000);
     http.setAuthorization(PH3B3_AUTH_USER, PH3B3_AUTH_PASS);
 
     int code = http.GET();

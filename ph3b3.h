@@ -15,10 +15,11 @@ class IrisPh3b3 {
     void update();
 
  private:
-    IrisFace*     _face   = nullptr;
+    IrisFace*     _face        = nullptr;
     String        _host;
-    int           _port   = 0;
-    unsigned long _lastMs = 0;
+    int           _port        = 0;
+    unsigned long _lastMs      = 0;
+    bool          _greetedOnce = false;
 
     bool _checkHealth();
 };
