@@ -35,30 +35,16 @@ void IrisWifi::begin(IrisFace* face) {
     String wSSID, wPass;
     _loadWifiPrefs(wSSID, wPass);
 
-    _face->setStatusLine(("SSID:" + (wSSID.length() ? wSSID : "(none)")).c_str());
-    _face->update();
-    delay(2000);
-
     if (wSSID.length() > 0) {
         WiFi.mode(WIFI_STA);
         WiFi.begin(wSSID.c_str(), wPass.c_str());
         uint32_t t0 = millis();
         while (millis() - t0 < 20000) {
-            wl_status_t s = WiFi.status();
-            if (s == WL_CONNECTED) break;
-            _face->setStatusLine(("WiFi:" + String((int)s)).c_str());
+            if (WiFi.status() == WL_CONNECTED) break;
             _face->update();
             delay(300);
         }
-        if (WiFi.status() == WL_CONNECTED) {
-            _face->setStatusLine(("IP:" + WiFi.localIP().toString()).c_str());
-            _face->update();
-            delay(2000);
-            return;
-        }
-        _face->setStatusLine(("fail " + String((int)WiFi.status()) + "->portal").c_str());
-        _face->update();
-        delay(1000);
+        if (WiFi.status() == WL_CONNECTED) return;
     }
 
     // ── Phase 2: WiFiManager portal ───────────────────────────────────────────
