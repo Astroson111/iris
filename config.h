@@ -19,6 +19,8 @@
 #define NVS_NAMESPACE          "iris"
 #define NVS_KEY_HOST           "ph3b3host"
 #define NVS_KEY_PORT           "ph3b3port"
+#define NVS_KEY_WIFI_SSID      "wifi_ssid"
+#define NVS_KEY_WIFI_PASS      "wifi_pass"
 
 // ── Display layout ────────────────────────────────────────────────────────────
 // StickS3: ST7789 135×240, portrait.

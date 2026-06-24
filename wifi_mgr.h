@@ -20,4 +20,6 @@ class IrisWifi {
 
     void _loadPrefs();
     void _savePrefs(const char* host, int port);
+    void _loadWifiPrefs(String& ssid, String& pass);
+    void _saveWifiPrefs(const String& ssid, const String& pass);
 };

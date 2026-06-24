@@ -11,9 +11,6 @@ static bool      _paramsDirty = false;   // set true when portal saves new value
 static void onPortalStart(WiFiManager*) {
     if (_facePtr) {
         _facePtr->setState(IrisState::CONFIG_PORTAL);
-        // Write AP IP to the status band so the user knows where to navigate.
-        // Called from the WiFiManager blocking loop — Avatar task does not
-        // write to the status band region, so direct draw is safe here.
         _facePtr->setStatusLine("192.168.4.1");
     }
 }
@@ -32,13 +29,46 @@ void IrisWifi::begin(IrisFace* face) {
 
     _face->setState(IrisState::WIFI_CONNECTING);
 
+    // ── Phase 1: our own NVS credentials ─────────────────────────────────────
+    // WiFiManager clears the ESP32 WiFi NVS when it opens the AP, so we keep
+    // credentials in our own "iris" namespace which it cannot touch.
+    String wSSID, wPass;
+    _loadWifiPrefs(wSSID, wPass);
+
+    _face->setStatusLine(("SSID:" + (wSSID.length() ? wSSID : "(none)")).c_str());
+    _face->update();
+    delay(2000);
+
+    if (wSSID.length() > 0) {
+        WiFi.mode(WIFI_STA);
+        WiFi.begin(wSSID.c_str(), wPass.c_str());
+        uint32_t t0 = millis();
+        while (millis() - t0 < 20000) {
+            wl_status_t s = WiFi.status();
+            if (s == WL_CONNECTED) break;
+            _face->setStatusLine(("WiFi:" + String((int)s)).c_str());
+            _face->update();
+            delay(300);
+        }
+        if (WiFi.status() == WL_CONNECTED) {
+            _face->setStatusLine(("IP:" + WiFi.localIP().toString()).c_str());
+            _face->update();
+            delay(2000);
+            return;
+        }
+        _face->setStatusLine(("fail " + String((int)WiFi.status()) + "->portal").c_str());
+        _face->update();
+        delay(1000);
+    }
+
+    // ── Phase 2: WiFiManager portal ───────────────────────────────────────────
+    _face->setState(IrisState::CONFIG_PORTAL);
     WiFiManager wm;
     wm.setAPCallback(onPortalStart);
     wm.setSaveParamsCallback(onSaveParams);
     wm.setConfigPortalTimeout(PORTAL_TIMEOUT_S);
     wm.setConnectTimeout(WIFI_CONNECT_TIMEOUT_S);
 
-    // Custom fields shown in the portal so the user can update Ph3b3's address.
     char portStr[8];
     snprintf(portStr, sizeof(portStr), "%d", _ph3b3Port);
     WiFiManagerParameter hostParam("ph3b3host", "Ph3b3 host", _ph3b3Host.c_str(), 64);
@@ -48,13 +78,18 @@ void IrisWifi::begin(IrisFace* face) {
 
     bool connected = wm.autoConnect(IRIS_AP_SSID);
 
-    if (connected && _paramsDirty) {
-        String newHost = String(hostParam.getValue());
-        int    newPort = atoi(portParam.getValue());
-        if (newHost.length() > 0 && newPort > 0) {
-            _ph3b3Host = newHost;
-            _ph3b3Port = newPort;
-            _savePrefs(newHost.c_str(), newPort);
+    if (connected) {
+        // Save working credentials to our own NVS so Phase 1 survives future portal runs.
+        _saveWifiPrefs(WiFi.SSID(), WiFi.psk());
+
+        if (_paramsDirty) {
+            String newHost = String(hostParam.getValue());
+            int    newPort = atoi(portParam.getValue());
+            if (newHost.length() > 0 && newPort > 0) {
+                _ph3b3Host = newHost;
+                _ph3b3Port = newPort;
+                _savePrefs(newHost.c_str(), newPort);
+            }
         }
     }
 }
@@ -76,5 +111,21 @@ void IrisWifi::_savePrefs(const char* host, int port) {
     p.begin(NVS_NAMESPACE, /*readOnly=*/false);
     p.putString(NVS_KEY_HOST, host);
     p.putInt(NVS_KEY_PORT, port);
+    p.end();
+}
+
+void IrisWifi::_loadWifiPrefs(String& ssid, String& pass) {
+    Preferences p;
+    p.begin(NVS_NAMESPACE, /*readOnly=*/true);
+    ssid = p.getString(NVS_KEY_WIFI_SSID, "");
+    pass = p.getString(NVS_KEY_WIFI_PASS, "");
+    p.end();
+}
+
+void IrisWifi::_saveWifiPrefs(const String& ssid, const String& pass) {
+    Preferences p;
+    p.begin(NVS_NAMESPACE, /*readOnly=*/false);
+    p.putString(NVS_KEY_WIFI_SSID, ssid);
+    p.putString(NVS_KEY_WIFI_PASS, pass);
     p.end();
 }

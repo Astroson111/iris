@@ -36,7 +36,15 @@ bool IrisPh3b3::_checkHealth() {
     HTTPClient http;
     String url = "https://" + _host + ":" + String(_port) + "/health";
 
-    if (!http.begin(client, url)) return false;
+    _face->setStatusLine((_host + ":" + String(_port)).c_str());
+    _face->update();
+
+    if (!http.begin(client, url)) {
+        _face->setStatusLine("http.begin fail");
+        _face->update();
+        delay(2000);
+        return false;
+    }
 
     // setConnectTimeout sets SO_RCVTIMEO on the socket; without it the default
     // 5 s can race the TLS handshake. http.setTimeout() alone is not enough.
@@ -46,6 +54,10 @@ bool IrisPh3b3::_checkHealth() {
 
     int code = http.GET();
     http.end();
+
+    _face->setStatusLine(("HTTP " + String(code)).c_str());
+    _face->update();
+    delay(2000);
 
     return (code >= 200 && code < 300);
 }
