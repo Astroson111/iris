@@ -27,6 +27,9 @@ static const int PTT_RATE = 16000;
 static const int PTT_MAX  = PTT_RATE * 12;  // 12 s @ 16 kHz
 
 void setup() {
+    // Cache reset reason before anything can change it.
+    esp_reset_reason_t _lastReset = esp_reset_reason();
+
     Serial.begin(115200);
 
     auto cfg = M5.config();
@@ -36,8 +39,21 @@ void setup() {
     M5.Speaker.setVolume(200);
 
     irisFace.begin();
-    irisFace.setState(IrisState::BOOT);
-    faceDelay(800);
+
+    // Show why we last rebooted — critical for diagnosing crash/brownout/WDT loops.
+    char rrBuf[20];
+    switch (_lastReset) {
+        case ESP_RST_BROWNOUT: strcpy(rrBuf, "RST:BROWNOUT"); break;
+        case ESP_RST_PANIC:    strcpy(rrBuf, "RST:PANIC");    break;
+        case ESP_RST_WDT:      strcpy(rrBuf, "RST:WDT");      break;
+        case ESP_RST_TASK_WDT: strcpy(rrBuf, "RST:TWDT");     break;
+        case ESP_RST_INT_WDT:  strcpy(rrBuf, "RST:IWDT");     break;
+        case ESP_RST_SW:       strcpy(rrBuf, "RST:SW");        break;
+        case ESP_RST_POWERON:  strcpy(rrBuf, "RST:POWERON");   break;
+        default: snprintf(rrBuf, sizeof(rrBuf), "RST:%d", (int)_lastReset); break;
+    }
+    irisFace.setState(IrisState::BOOT, rrBuf);
+    faceDelay(3000);  // hold long enough to read before WiFi starts
 
     irisWifi.begin(&irisFace);
 
@@ -53,6 +69,11 @@ void setup() {
 
 void loop() {
     M5.update();
+
+    static uint32_t sBtnBDownAt = 0;
+    if (M5.BtnB.wasPressed())  sBtnBDownAt = millis();
+    if (M5.BtnB.isPressed() && sBtnBDownAt && (millis() - sBtnBDownAt) >= 1000)
+        M5.Power.powerOff();
 
     // ── BtnA: hold ≥200ms = PTT voice │ short tap = canned prompt ─────────
     // wasReleased() can be missed if M5.Mic.record() (blocking 32ms) straddles

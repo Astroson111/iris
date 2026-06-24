@@ -7,6 +7,7 @@
 // ── File-scope state shared with WiFiManager callbacks ────────────────────
 static IrisFace* _facePtr   = nullptr;
 static bool      _paramsDirty = false;   // set true when portal saves new values
+static volatile uint8_t _wifiDisconnReason = 0;
 
 static void onPortalStart(WiFiManager*) {
     if (_facePtr) {
@@ -31,14 +32,34 @@ void IrisWifi::begin(IrisFace* face) {
     _face->setState(IrisState::WIFI_CONNECTING);
 
     // ── Phase 1: our own NVS credentials ─────────────────────────────────────
-    // WiFiManager clears the ESP32 WiFi NVS when it opens the AP, so we keep
-    // credentials in our own "iris" namespace which it cannot touch.
+    // Boot diagnostic: show what SSID is in NVS — visible for 2s so cred-persistence
+    // can be verified from the screen without serial.
     String wSSID, wPass;
     _loadWifiPrefs(wSSID, wPass);
 
+    {
+        String d = wSSID.length() > 0 ? ("NVS>" + wSSID.substring(0, 12)) : "NVS:empty";
+        _face->setStatusLine(d.c_str());
+        _face->update();
+        delay(2000);
+    }
+
     if (wSSID.length() > 0) {
+        _wifiDisconnReason = 0;
+        WiFi.onEvent([](WiFiEvent_t ev, WiFiEventInfo_t info) {
+            if (ev == ARDUINO_EVENT_WIFI_STA_DISCONNECTED)
+                _wifiDisconnReason = info.wifi_sta_disconnected.reason;
+        }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+
         WiFi.mode(WIFI_STA);
         WiFi.begin(wSSID.c_str(), wPass.c_str());
+
+        // Show the SSID we're actually trying — catches + → space mangling
+        String ssidTag = ">" + (wSSID.length() > 11 ? wSSID.substring(0, 11) + "~" : wSSID);
+        _face->setStatusLine(ssidTag.c_str());
+        _face->update();
+        delay(800);
+
         uint32_t t0  = millis();
         uint32_t lim = (uint32_t)WIFI_CONNECT_TIMEOUT_S * 1000UL;
         while (millis() - t0 < lim) {
@@ -48,13 +69,38 @@ void IrisWifi::begin(IrisFace* face) {
             _face->update();
             delay(300);
         }
-        // Timed out — stop the pending connection attempt so WiFiManager gets a
-        // clean WiFi stack and doesn't silently retry the same stale network.
-        WiFi.disconnect(true);
+
+        // Hold reason code on screen for 5s before falling to portal
+        // 201=NO_AP_FOUND (band/SSID)  202=AUTH_FAIL (password)
+        // 15/204=handshake timeout (password)  0=no event fired
+        String rsn;
+        switch (_wifiDisconnReason) {
+            case 201: rsn = "NO_AP R:201";  break;
+            case 202: rsn = "AUTH  R:202";  break;
+            case 15:  rsn = "HSHK  R:15";   break;
+            case 204: rsn = "HSHK  R:204";  break;
+            case 0:   rsn = "R:timeout";    break;
+            default:  rsn = "R:" + String(_wifiDisconnReason); break;
+        }
+        _face->setStatusLine(rsn.c_str());
+        _face->update();
+        delay(5000);
+
+        // Timed out — erase the ESP32 WiFi NVS (eraseap=true) so WiFiManager
+        // cannot silently auto-connect to any previously saved network and is
+        // forced to open the captive portal for fresh credentials.
+        WiFi.disconnect(true, true);
         delay(100);
     }
 
     // ── Phase 2: WiFiManager captive portal ───────────────────────────────────
+    // Erase ESP32 WiFi NVS unconditionally before opening the portal.
+    // This covers the Phase-1-skipped case (empty "iris" NVS on first boot)
+    // where disconnect(true,true) hasn't run yet, so WiFiManager can't silently
+    // auto-connect to a stale network and must always go through the portal.
+    WiFi.disconnect(true, true);
+    delay(100);
+
     // Show portal state on display before autoConnect() blocks the loop.
     _face->setState(IrisState::CONFIG_PORTAL);
     _face->setStatusLine("192.168.4.1");
@@ -80,6 +126,11 @@ void IrisWifi::begin(IrisFace* face) {
     if (connected) {
         // Save working credentials to our own NVS so Phase 1 survives future portal runs.
         _saveWifiPrefs(WiFi.SSID(), WiFi.psk());
+        // Show what we saved — on-screen confirmation since serial is dead.
+        String saved = "saved:" + WiFi.SSID().substring(0, 10);
+        _face->setStatusLine(saved.c_str());
+        _face->update();
+        delay(2000);
 
         if (_paramsDirty) {
             String newHost = String(hostParam.getValue());
