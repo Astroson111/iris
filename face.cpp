@@ -11,16 +11,17 @@ static M5Canvas _cv(&M5.Display);
 static constexpr int FCX   = 67;   // face circle centre X
 static constexpr int FCY   = 100;  // face circle centre Y
 static constexpr int FCR   = 57;   // face circle radius
-static constexpr int GLOWR = 62;   // glow radius
-static constexpr int LEX   = 49;   // left  eye cx (viewer's left)
-static constexpr int REX   = 86;   // right eye cx
-static constexpr int EYY   = 98;   // both eyes cy
-static constexpr int ERX   = 14;   // eye rx
-static constexpr int ERY   = 16;   // eye ry
-static constexpr int MTHY  = 120;  // mouth baseline Y
+static constexpr int GLOWR = 64;   // glow radius
+static constexpr int LEX   = 47;   // left  eye cx
+static constexpr int REX   = 88;   // right eye cx
+static constexpr int EYY   = 96;   // both eyes cy
+static constexpr int ESX   = 16;   // eye sclera rx
+static constexpr int ESY   = 17;   // eye sclera ry
+static constexpr int EIR   = 13;   // iris radius
+static constexpr int MTHY  = 122;  // mouth baseline Y
 
 // ─── Colors ───────────────────────────────────────────────────────────────────
-static uint16_t C_FACE, C_GLOW, C_EYE, C_MOUTH, C_WHITE, C_BLK;
+static uint16_t C_FACE, C_GLOW, C_RIM, C_EYE, C_MOUTH, C_BLUSH, C_WHITE, C_BLK;
 
 // ─── Animation ────────────────────────────────────────────────────────────────
 static float    _blink     = 0.0f;
@@ -156,6 +157,18 @@ static void render(float t) {
             mouthRY    = 5.0f;
             frown      = true;
             break;
+        case IrisState::LISTENING:
+            faceBright = 1.0f;
+            mouthRY    = 5.0f;
+            break;
+        case IrisState::THINKING:
+            faceBright = 0.9f;
+            flatMouth  = true;
+            break;
+        case IrisState::SPEAKING:
+            faceBright = 1.0f;
+            mouthRY    = 7.0f + _speak * 9.0f;
+            break;
     }
 
     _cv.fillScreen(C_BLK);
@@ -163,33 +176,51 @@ static void render(float t) {
     // 1 — outer glow
     _cv.fillSmoothCircle(FCX, FCY + oy, GLOWR, dimC(C_GLOW, faceBright * 0.7f));
 
-    // 2 — face disc
+    // 2 — bright rim ring (visible between glow and face disc)
+    _cv.fillSmoothCircle(FCX, FCY + oy, FCR + 2, dimC(C_RIM, faceBright));
+
+    // 3 — face disc
     uint16_t cFace = dimC(C_FACE, faceBright);
     _cv.fillSmoothCircle(FCX, FCY + oy, FCR, cFace);
 
-    // (circuit traces removed — face-only design)
-
-    // 4 — dark almond eyes
+    // 4 — eyes: white sclera → dark iris → dark eyelid
     int ey = EYY + oy;
-    _cv.fillEllipse(LEX, ey, ERX, ERY, C_EYE);
-    _cv.fillEllipse(REX, ey, ERX, ERY, C_EYE);
+    uint16_t cW = dimC(C_WHITE, faceBright);
+    _cv.fillEllipse(LEX, ey, ESX, ESY, cW);
+    _cv.fillEllipse(REX, ey, ESX, ESY, cW);
 
-    // 5 — brow arcs: face-colour ellipse carved over the top of each eye
-    //     gives the almond / sleepy-lid shape from the SVG
-    _cv.fillEllipse(LEX, ey - ERY + 3, ERX + 3, 8, cFace);
-    _cv.fillEllipse(REX, ey - ERY + 3, ERX + 3, 8, cFace);
+    uint16_t cEye = dimC(C_EYE, faceBright);
+    _cv.fillSmoothCircle(LEX, ey + 1, EIR, cEye);   // iris slightly low in sclera
+    _cv.fillSmoothCircle(REX, ey + 1, EIR, cEye);
 
-    // 6 — blink: face-colour rect drops from eye top
+    // face-colour ellipse across top of sclera = thick dark anime eyelid
+    _cv.fillEllipse(LEX, ey - ESY + 4, ESX + 2, 7, cFace);
+    _cv.fillEllipse(REX, ey - ESY + 4, ESX + 2, 7, cFace);
+
+    // 5 — blink: face-colour rect drops from eye top
     if (_blink > 0.01f) {
-        int bh = max(1, (int)(_blink * (ERY * 2 + 4)));
-        _cv.fillRect(LEX - ERX - 1, ey - ERY, ERX * 2 + 2, bh, cFace);
-        _cv.fillRect(REX - ERX - 1, ey - ERY, ERX * 2 + 2, bh, cFace);
+        int bh = max(1, (int)(_blink * (ESY * 2 + 4)));
+        _cv.fillRect(LEX - ESX - 1, ey - ESY, ESX * 2 + 2, bh, cFace);
+        _cv.fillRect(REX - ESX - 1, ey - ESY, ESX * 2 + 2, bh, cFace);
     }
 
-    // 7 — white highlights (upper-left of each iris)
+    // 6 — 4-point star sparkle on each iris
     if (_blink < 0.65f) {
-        _cv.fillSmoothCircle(LEX - 4, ey - 4, 3, C_WHITE);
-        _cv.fillSmoothCircle(REX - 4, ey - 4, 3, C_WHITE);
+        for (int side = 0; side < 2; side++) {
+            int sx = (side == 0 ? LEX : REX) - 3;
+            int sy = ey - 4;
+            _cv.fillSmoothCircle(sx, sy, 2, cW);
+            _cv.fillRect(sx - 5, sy - 1, 11, 3, cW);  // horizontal bar
+            _cv.fillRect(sx - 1, sy - 5, 3, 11, cW);  // vertical bar
+            _cv.fillSmoothCircle(sx + 6, sy + 4, 1, cW);  // secondary dot
+        }
+    }
+
+    // 7 — blush dots on cheeks
+    if (!frown && !flatMouth) {
+        uint16_t cBl = dimC(C_BLUSH, faceBright * 0.55f);
+        _cv.fillSmoothCircle(FCX - 22, MTHY - 8 + oy, 5, cBl);
+        _cv.fillSmoothCircle(FCX + 22, MTHY - 8 + oy, 5, cBl);
     }
 
     // 8 — mouth
@@ -199,7 +230,13 @@ static void render(float t) {
         _cv.fillSmoothRoundRect(FCX - 11, my, 22, 3, 1, cMo);
     } else {
         float ry = frown ? -mouthRY : mouthRY;
-        drawMouthArc(FCX, my, 15.0f, ry, cMo, 3);
+        if (frown) {
+            drawMouthArc(FCX, my, 14.0f, ry, cMo, 3);
+        } else {
+            // Open smile: white teeth window + magenta lip arc
+            drawMouthArc(FCX, my - 2, 11.0f, ry * 0.45f, cW,  4);  // teeth
+            drawMouthArc(FCX, my,     14.0f, ry,          cMo, 3);  // lip
+        }
     }
 
     // 9 — speech bubble
@@ -224,10 +261,12 @@ void IrisFace::begin() {
     panel->config(pcfg);
     M5.Display.setRotation(0);
 
-    C_FACE  = M5.Display.color565(0x6B, 0x3F, 0xA0);
-    C_GLOW  = M5.Display.color565(0x3B, 0x1F, 0x60);
-    C_EYE   = M5.Display.color565(0x1A, 0x08, 0x30);
-    C_MOUTH = M5.Display.color565(0xE0, 0x40, 0x8A);
+    C_FACE  = M5.Display.color565(0x18, 0x10, 0x42);   // deep indigo
+    C_GLOW  = M5.Display.color565(0x20, 0x0A, 0x70);   // dark purple glow
+    C_RIM   = M5.Display.color565(0x78, 0x38, 0xCC);   // bright purple rim ring
+    C_EYE   = M5.Display.color565(0x12, 0x08, 0x2E);   // very dark iris
+    C_MOUTH = M5.Display.color565(0xE0, 0x40, 0x8A);   // magenta lips
+    C_BLUSH = M5.Display.color565(0xD0, 0x60, 0x90);   // pink blush
     C_WHITE = 0xFFFF;
     C_BLK   = 0x0000;
 
@@ -255,7 +294,8 @@ void IrisFace::update() {
                : 0.0f;
         if (k >= 250.f) { _blinkSt = 0; _nextBlink = now + 2200 + random(3000); }
     }
-    if (_fstate == IrisState::BOOT) _blink = 0.7f;
+    if (_fstate == IrisState::BOOT)      _blink = 0.7f;
+    if (_fstate == IrisState::LISTENING) _blink = 0.0f;  // eyes wide open while listening
 
     // Mouth decay
     float target = (now - _levelMs < 300) ? _levelVal : 0.0f;
@@ -286,6 +326,9 @@ void IrisFace::setState(IrisState s, const char* speechOverride) {
         case IrisState::PH3B3_SEARCHING:   _statusTxt = "finding Ph3b3"; break;
         case IrisState::PH3B3_HEALTHY:     _statusTxt = "Ph3b3 online";  break;
         case IrisState::PH3B3_UNREACHABLE: _statusTxt = "Ph3b3 away";    break;
+        case IrisState::LISTENING:         _statusTxt = "listening...";  break;
+        case IrisState::THINKING:          _statusTxt = "thinking...";   break;
+        case IrisState::SPEAKING:          _statusTxt = "speaking...";   break;
     }
     if (speechOverride) _statusTxt = speechOverride;
 }

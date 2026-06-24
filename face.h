@@ -8,6 +8,9 @@ enum class IrisState : uint8_t {
     PH3B3_SEARCHING,
     PH3B3_HEALTHY,
     PH3B3_UNREACHABLE,
+    LISTENING,
+    THINKING,
+    SPEAKING,
 };
 
 class IrisFace {
