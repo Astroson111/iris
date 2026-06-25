@@ -1,6 +1,7 @@
 #include "wifi_mgr.h"
 #include <WiFi.h>
-#include <WiFiManager.h>
+#include <DNSServer.h>
+#include <WebServer.h>
 #include <Preferences.h>
 #include <esp_wifi.h>
 #include "config.h"
@@ -26,151 +27,248 @@ static void _wifiJoin(const char* ssid, const char* pass) {
     esp_wifi_connect();
 }
 
-// ── File-scope state shared with WiFiManager callbacks ────────────────────
-static IrisFace* _facePtr   = nullptr;
-static bool      _paramsDirty = false;   // set true when portal saves new values
 static volatile uint8_t _wifiDisconnReason = 0;
 
-static void onPortalStart(WiFiManager*) {
-    if (_facePtr) {
-        _facePtr->setState(IrisState::CONFIG_PORTAL);
-        _facePtr->setStatusLine("192.168.4.1");
-        _facePtr->update();   // push to display before autoConnect blocks the loop
-    }
-}
-
-static void onSaveParams() {
-    _paramsDirty = true;
-}
-
-// ── IrisWifi implementation ────────────────────────────────────────────────
+// ── IrisWifi::begin ───────────────────────────────────────────────────────────
 
 void IrisWifi::begin(IrisFace* face) {
-    _face    = face;
-    _facePtr = face;
-
-    _loadPrefs();  // populate _ph3b3Host / _ph3b3Port from NVS
+    _face = face;
+    _loadPrefs();
 
     _face->setState(IrisState::WIFI_CONNECTING);
 
-    // ── Phase 1: our own NVS credentials ─────────────────────────────────────
-    // Boot diagnostic: show what SSID is in NVS — visible for 2s so cred-persistence
-    // can be verified from the screen without serial.
-    String wSSID, wPass;
-    _loadWifiPrefs(wSSID, wPass);
+    // ── Phase 1: try all saved slots in order ─────────────────────────────────
+    String ssids[WIFI_SLOT_MAX], passes[WIFI_SLOT_MAX];
+    int count = 0;
+    _loadWifiSlots(ssids, passes, count);
 
-    {
-        String d = wSSID.length() > 0 ? ("NVS>" + wSSID.substring(0, 12)) : "NVS:empty";
-        _face->setStatusLine(d.c_str());
-        _face->update();
-        delay(2000);
-    }
-
-    if (wSSID.length() > 0) {
-        _wifiDisconnReason = 0;
+    if (count > 0) {
         WiFi.onEvent([](WiFiEvent_t ev, WiFiEventInfo_t info) {
             if (ev == ARDUINO_EVENT_WIFI_STA_DISCONNECTED)
                 _wifiDisconnReason = info.wifi_sta_disconnected.reason;
         }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
 
-        _wifiJoin(wSSID.c_str(), wPass.c_str());
-
-        // Show the SSID we're actually trying — catches + → space mangling
-        String ssidTag = ">" + (wSSID.length() > 11 ? wSSID.substring(0, 11) + "~" : wSSID);
-        _face->setStatusLine(ssidTag.c_str());
-        _face->update();
-        delay(800);
-
-        uint32_t t0  = millis();
-        uint32_t lim = (uint32_t)WIFI_CONNECT_TIMEOUT_S * 1000UL;
-        while (millis() - t0 < lim) {
-            if (WiFi.status() == WL_CONNECTED) return;
-            uint32_t secLeft = (lim - (millis() - t0) + 999) / 1000;
-            _face->setStatusLine(("wifi... " + String(secLeft) + "s").c_str());
-            _face->update();
-            delay(300);
+        for (int i = 0; i < count; i++) {
+            if (_trySlot(ssids[i], passes[i], i, count)) return;
         }
 
-        // Hold reason code on screen for 5s before falling to portal
-        // 201=NO_AP_FOUND (band/SSID)  202=AUTH_FAIL (password)
-        // 15/204=handshake timeout (password)  0=no event fired
-        String rsn;
-        switch (_wifiDisconnReason) {
-            case 201: rsn = "NO_AP R:201";  break;
-            case 202: rsn = "AUTH  R:202";  break;
-            case 15:  rsn = "HSHK  R:15";   break;
-            case 204: rsn = "HSHK  R:204";  break;
-            case 0:   rsn = "R:timeout";    break;
-            default:  rsn = "R:" + String(_wifiDisconnReason); break;
-        }
-        _face->setStatusLine(rsn.c_str());
-        _face->update();
-        delay(5000);
-
-        // Timed out — erase the ESP32 WiFi NVS (eraseap=true) so WiFiManager
-        // cannot silently auto-connect to any previously saved network and is
-        // forced to open the captive portal for fresh credentials.
+        // All slots failed — erase ESP32 WiFi NVS so portal can't silently re-connect
         WiFi.disconnect(true, true);
         delay(100);
     }
 
-    // ── Phase 2: WiFiManager captive portal ───────────────────────────────────
-    // Erase ESP32 WiFi NVS unconditionally so WiFiManager cannot silently
-    // auto-connect to a stale network before opening the portal.
-    WiFi.disconnect(false, true);   // eraseap=true, wifioff=false — keep stack up
-    delay(100);
-    // Ensure WiFi is in STA mode (not OFF) before WiFiManager starts.
-    // disconnect(true,true) above can leave WiFi OFF; starting AP_STA from OFF
-    // on IDF5 may silently fail to bring up the SoftAP.
-    WiFi.mode(WIFI_STA);
+    // ── Phase 2: DIY captive portal ───────────────────────────────────────────
+    _runPortal();
+}
+
+// Try one slot; returns true if connected within WIFI_CONNECT_TIMEOUT_S.
+bool IrisWifi::_trySlot(const String& ssid, const String& pass, int idx, int total) {
+    _wifiDisconnReason = 0;
+    _wifiJoin(ssid.c_str(), pass.c_str());
+
+    String base = ">" + ssid.substring(0, 7) + "(" + String(idx + 1) + "/" + String(total) + ")";
+    _face->setStatusLine(base.c_str());
+    _face->update();
+
+    uint32_t t0  = millis();
+    uint32_t lim = (uint32_t)WIFI_CONNECT_TIMEOUT_S * 1000UL;
+    while (millis() - t0 < lim) {
+        if (WiFi.status() == WL_CONNECTED) return true;
+        uint32_t s = (lim - (millis() - t0) + 999) / 1000;
+        _face->setStatusLine((base + " " + String(s) + "s").c_str());
+        _face->update();
+        delay(300);
+    }
+
+    // Show fail reason briefly before trying next slot
+    String rsn;
+    switch (_wifiDisconnReason) {
+        case 201: rsn = "NO_AP R:201"; break;
+        case 202: rsn = "AUTH  R:202"; break;
+        case 15:  rsn = "HSHK  R:15";  break;
+        case 204: rsn = "HSHK  R:204"; break;
+        case 0:   rsn = "R:timeout";   break;
+        default:  rsn = "R:" + String(_wifiDisconnReason); break;
+    }
+    _face->setStatusLine(rsn.c_str());
+    _face->update();
+    delay(2000);
+    return false;
+}
+
+// ── DIY captive portal ────────────────────────────────────────────────────────
+
+void IrisWifi::_runPortal() {
+    WiFi.mode(WIFI_OFF);
+    delay(200);
+    WiFi.softAP(IRIS_AP_SSID);
     delay(200);
 
-    // Show portal state on display before autoConnect() blocks the loop.
     _face->setState(IrisState::CONFIG_PORTAL);
     _face->setStatusLine("192.168.4.1");
     _face->update();
 
-    WiFiManager wm;
-    wm.setAPCallback(onPortalStart);
-    wm.setSaveParamsCallback(onSaveParams);
-    wm.setConfigPortalTimeout(PORTAL_TIMEOUT_S);
-    // Phase 1 already spent WIFI_CONNECT_TIMEOUT_S on saved creds; tell WiFiManager
-    // to skip its own connect attempt and go straight to the AP portal.
-    wm.setConnectTimeout(1);
+    // Load current slots to pre-fill form
+    String ssids[WIFI_SLOT_MAX], passes[WIFI_SLOT_MAX];
+    int count = 0;
+    _loadWifiSlots(ssids, passes, count);
 
-    char portStr[8];
-    snprintf(portStr, sizeof(portStr), "%d", _ph3b3Port);
-    WiFiManagerParameter hostParam("ph3b3host", "Ph3b3 host", _ph3b3Host.c_str(), 64);
-    WiFiManagerParameter portParam("ph3b3port", "Ph3b3 port", portStr, 6);
-    wm.addParameter(&hostParam);
-    wm.addParameter(&portParam);
+    DNSServer dns;
+    dns.start(53, "*", IPAddress(192, 168, 4, 1));
 
-    bool connected = wm.autoConnect(IRIS_AP_SSID);
+    WebServer server(80);
 
-    if (connected) {
-        // Save working credentials to our own NVS so Phase 1 survives future portal runs.
-        _saveWifiPrefs(WiFi.SSID(), WiFi.psk());
-        // Show what we saved — on-screen confirmation since serial is dead.
-        String saved = "saved:" + WiFi.SSID().substring(0, 10);
-        _face->setStatusLine(saved.c_str());
-        _face->update();
-        delay(2000);
+    server.on("/", HTTP_GET, [&]() {
+        String page =
+            F("<!DOCTYPE html><html><head>"
+              "<meta charset='utf-8'>"
+              "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+              "<title>Iris Setup</title>"
+              "<style>"
+              "body{font-family:sans-serif;background:#0a0318;color:#e0d4ff;"
+                   "max-width:480px;margin:0 auto;padding:1rem}"
+              "h1{color:#a855f7;margin-bottom:.2rem}"
+              "p.sub{color:#a09ab8;font-size:.85rem;margin-top:0}"
+              ".slot{background:#1a0a38;border:1px solid #3d1f7a;border-radius:8px;"
+                    "padding:.75rem;margin:.5rem 0}"
+              ".slot h3{margin:0 0 .5rem;font-size:.9rem;color:#c084fc}"
+              "label{font-size:.8rem;color:#a09ab8;display:block;margin-top:.4rem}"
+              "input{width:100%;box-sizing:border-box;background:#0d0525;"
+                    "border:1px solid #4b2c8a;border-radius:4px;color:#e0d4ff;"
+                    "padding:.4rem .5rem;font-size:.95rem;margin-top:2px}"
+              "input:focus{outline:none;border-color:#a855f7}"
+              ".srv{background:#1a0a38;border:1px solid #3d1f7a;border-radius:8px;"
+                   "padding:.75rem;margin-top:1rem}"
+              ".row2{display:grid;grid-template-columns:3fr 1fr;gap:.5rem}"
+              "button{width:100%;margin-top:1rem;padding:.75rem;background:#7e22ce;"
+                     "border:none;border-radius:8px;color:#fff;font-size:1rem;"
+                     "font-weight:700;cursor:pointer}"
+              "button:hover{background:#9333ea}"
+              "small{display:block;color:#7c66aa;font-size:.75rem;margin-top:.5rem}"
+              "</style></head><body>"
+              "<h1>Iris Setup</h1>"
+              "<p class='sub'>Iris tries networks in order, 8 s each.</p>"
+              "<form method='POST' action='/save'>");
 
-        if (_paramsDirty) {
-            String newHost = String(hostParam.getValue());
-            int    newPort = atoi(portParam.getValue());
-            if (newHost.length() > 0 && newPort > 0) {
-                _ph3b3Host = newHost;
-                _ph3b3Port = newPort;
-                _savePrefs(newHost.c_str(), newPort);
-            }
+        for (int i = 0; i < WIFI_SLOT_MAX; i++) {
+            page += "<div class='slot'><h3>Network ";
+            page += String(i + 1);
+            page += "</h3><label>SSID</label>"
+                    "<input name='ssid";
+            page += String(i);
+            page += "' value='";
+            page += (i < count ? ssids[i] : "");
+            page += "'><label>Password</label>"
+                    "<input name='pass";
+            page += String(i);
+            page += "' type='password' placeholder='(blank keeps saved password)'>"
+                    "</div>";
         }
+
+        page += F("<div class='srv'><h3>Ph3b3 Server</h3>"
+                  "<div class='row2'>"
+                  "<div><label>Host / IP</label>"
+                  "<input name='ph3b3host' value='");
+        page += _ph3b3Host;
+        page += F("'></div><div><label>Port</label>"
+                  "<input name='ph3b3port' value='");
+        page += String(_ph3b3Port);
+        page += F("'></div></div></div>"
+                  "<button type='submit'>Save &amp; Reboot</button>"
+                  "<small>Clear an SSID field to remove that slot. "
+                  "Leave password blank to keep the existing saved password.</small>"
+                  "</form></body></html>");
+
+        server.send(200, "text/html", page);
+    });
+
+    // Captive portal: redirect every unknown path to root
+    server.onNotFound([&]() {
+        server.sendHeader("Location", "http://192.168.4.1/", true);
+        server.send(302, "text/plain", "");
+    });
+
+    server.on("/save", HTTP_POST, [&]() {
+        String newSSIDs[WIFI_SLOT_MAX], newPasses[WIFI_SLOT_MAX];
+        int newCount = 0;
+
+        for (int i = 0; i < WIFI_SLOT_MAX; i++) {
+            String s = server.arg("ssid" + String(i));
+            s.trim();
+            if (s.length() == 0) continue;   // cleared SSID = drop slot
+
+            String p = server.arg("pass" + String(i));
+            p.trim();
+            // Blank password field = keep whatever was saved at this position
+            if (p.length() == 0 && i < count) p = passes[i];
+
+            newSSIDs[newCount]  = s;
+            newPasses[newCount] = p;
+            newCount++;
+        }
+
+        String newHost = server.arg("ph3b3host");
+        newHost.trim();
+        int newPort = server.arg("ph3b3port").toInt();
+        if (newHost.length() > 0 && newPort > 0) {
+            _ph3b3Host = newHost;
+            _ph3b3Port = newPort;
+            _savePrefs(newHost.c_str(), newPort);
+        }
+
+        _saveWifiSlots(newSSIDs, newPasses, newCount);
+
+        server.send(200, "text/html",
+            "<html><body style='font-family:sans-serif;background:#0a0318;"
+            "color:#e0d4ff;text-align:center;padding:2rem'>"
+            "<h2 style='color:#a855f7'>Saved!</h2>"
+            "<p>Rebooting Iris...</p>"
+            "</body></html>");
+        delay(1000);
+        ESP.restart();
+    });
+
+    server.begin();
+
+    uint32_t deadline = millis() + (uint32_t)PORTAL_TIMEOUT_S * 1000UL;
+    while (millis() < deadline) {
+        dns.processNextRequest();
+        server.handleClient();
+        _face->update();
+        delay(5);
     }
+
+    server.stop();
+    dns.stop();
+    WiFi.mode(WIFI_OFF);
 }
+
+// ── Public methods ────────────────────────────────────────────────────────────
 
 bool IrisWifi::isConnected() const {
     return WiFi.status() == WL_CONNECTED;
 }
+
+// Called by the watchdog in loop(). Tries one slot per call, rotating so each
+// saved network gets a chance without blocking 32 s per reconnect cycle.
+void IrisWifi::reconnect() {
+    String ssids[WIFI_SLOT_MAX], passes[WIFI_SLOT_MAX];
+    int count = 0;
+    _loadWifiSlots(ssids, passes, count);
+    if (count == 0) return;
+
+    static int sSlotIdx = 0;
+    int slot = sSlotIdx % count;
+    _wifiJoin(ssids[slot].c_str(), passes[slot].c_str());
+    sSlotIdx = (slot + 1) % count;
+}
+
+void IrisWifi::clearWifiCreds() {
+    const String empty[WIFI_SLOT_MAX] = {};
+    _saveWifiSlots(empty, empty, 0);
+}
+
+// ── NVS helpers ───────────────────────────────────────────────────────────────
 
 void IrisWifi::_loadPrefs() {
     Preferences p;
@@ -188,29 +286,57 @@ void IrisWifi::_savePrefs(const char* host, int port) {
     p.end();
 }
 
-void IrisWifi::_loadWifiPrefs(String& ssid, String& pass) {
+void IrisWifi::_loadWifiSlots(String ssids[], String passes[], int& count) {
     Preferences p;
     p.begin(NVS_NAMESPACE, /*readOnly=*/true);
-    ssid = p.getString(NVS_KEY_WIFI_SSID, "");
-    pass = p.getString(NVS_KEY_WIFI_PASS, "");
+
+    // -1 sentinel = NVS_KEY_WIFI_COUNT not yet written (first boot of this firmware)
+    int stored = p.getInt(NVS_KEY_WIFI_COUNT, -1);
+
+    if (stored < 0) {
+        // One-time migration from legacy single-slot keys
+        String legSSID = p.getString("wifi_ssid", "");
+        String legPass = p.getString("wifi_pass", "");
+        p.end();
+        if (legSSID.length() > 0) {
+            ssids[0]  = legSSID;
+            passes[0] = legPass;
+            count = 1;
+            _saveWifiSlots(ssids, passes, 1);
+            Preferences rw;
+            rw.begin(NVS_NAMESPACE, /*readOnly=*/false);
+            rw.remove("wifi_ssid");
+            rw.remove("wifi_pass");
+            rw.end();
+        } else {
+            count = 0;
+        }
+        return;
+    }
+
+    count = (stored > WIFI_SLOT_MAX) ? WIFI_SLOT_MAX : stored;
+    char key[16];
+    for (int i = 0; i < count; i++) {
+        snprintf(key, sizeof(key), "wifi_ssid_%d", i);
+        ssids[i] = p.getString(key, "");
+        snprintf(key, sizeof(key), "wifi_pass_%d", i);
+        passes[i] = p.getString(key, "");
+    }
     p.end();
 }
 
-void IrisWifi::_saveWifiPrefs(const String& ssid, const String& pass) {
+void IrisWifi::_saveWifiSlots(const String ssids[], const String passes[], int count) {
     Preferences p;
     p.begin(NVS_NAMESPACE, /*readOnly=*/false);
-    p.putString(NVS_KEY_WIFI_SSID, ssid);
-    p.putString(NVS_KEY_WIFI_PASS, pass);
+    p.putInt(NVS_KEY_WIFI_COUNT, count);
+    char key[16];
+    for (int i = 0; i < WIFI_SLOT_MAX; i++) {
+        snprintf(key, sizeof(key), "wifi_ssid_%d", i);
+        if (i < count) p.putString(key, ssids[i]);
+        else           p.remove(key);
+        snprintf(key, sizeof(key), "wifi_pass_%d", i);
+        if (i < count) p.putString(key, passes[i]);
+        else           p.remove(key);
+    }
     p.end();
-}
-
-void IrisWifi::reconnect() {
-    String ssid, pass;
-    _loadWifiPrefs(ssid, pass);
-    if (ssid.length() == 0) return;
-    _wifiJoin(ssid.c_str(), pass.c_str());
-}
-
-void IrisWifi::clearWifiCreds() {
-    _saveWifiPrefs("", "");
 }

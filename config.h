@@ -13,14 +13,15 @@
 // ── WiFi / captive portal ─────────────────────────────────────────────────────
 #define IRIS_AP_SSID           "Iris-Setup"    // SoftAP SSID shown in config portal
 #define PORTAL_TIMEOUT_S       180             // portal auto-closes after 3 min
-#define WIFI_CONNECT_TIMEOUT_S 15              // seconds to try saved creds before portal
+#define WIFI_CONNECT_TIMEOUT_S 8               // seconds per saved network slot before trying next
+#define WIFI_SLOT_MAX          4               // max stored networks
 
 // ── NVS (Preferences namespace + keys) ───────────────────────────────────────
 #define NVS_NAMESPACE          "iris"
 #define NVS_KEY_HOST           "ph3b3host"
 #define NVS_KEY_PORT           "ph3b3port"
-#define NVS_KEY_WIFI_SSID      "wifi_ssid"
-#define NVS_KEY_WIFI_PASS      "wifi_pass"
+#define NVS_KEY_WIFI_COUNT     "wifi_count"
+// Per-slot keys built at runtime: "wifi_ssid_0".."wifi_ssid_3", "wifi_pass_0".."wifi_pass_3"
 
 // ── Display layout ────────────────────────────────────────────────────────────
 // StickS3: ST7789 135×240, portrait.

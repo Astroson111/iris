@@ -2,16 +2,16 @@
 #include <Arduino.h>
 #include "face.h"
 
-// Handles WiFi onboarding (captive portal), credential persistence (NVS),
-// and storage of the user-entered Ph3b3 host + port.
+// Handles WiFi onboarding (DIY captive portal), multi-slot credential persistence
+// (NVS), and storage of the user-entered Ph3b3 host + port.
 class IrisWifi {
  public:
     // Blocks until WiFi is connected or portal times out.
     // On return, call isConnected() to check result.
     void   begin(IrisFace* face);
     bool   isConnected() const;
-    void   reconnect();
-    void   clearWifiCreds();
+    void   reconnect();          // try one saved slot (rotates); called by watchdog
+    void   clearWifiCreds();     // wipe all saved networks (sets count=0)
     String getPh3b3Host() const { return _ph3b3Host; }
     int    getPh3b3Port() const { return _ph3b3Port; }
 
@@ -22,6 +22,8 @@ class IrisWifi {
 
     void _loadPrefs();
     void _savePrefs(const char* host, int port);
-    void _loadWifiPrefs(String& ssid, String& pass);
-    void _saveWifiPrefs(const String& ssid, const String& pass);
+    void _loadWifiSlots(String ssids[], String passes[], int& count);
+    void _saveWifiSlots(const String ssids[], const String passes[], int count);
+    bool _trySlot(const String& ssid, const String& pass, int idx, int total);
+    void _runPortal();
 };
