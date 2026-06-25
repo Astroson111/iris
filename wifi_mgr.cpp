@@ -2,7 +2,29 @@
 #include <WiFi.h>
 #include <WiFiManager.h>
 #include <Preferences.h>
+#include <esp_wifi.h>
 #include "config.h"
+
+// Full WiFi stack teardown + PMF-capable join.
+// Fixes WPA2/WPA3 mixed-mode heap leak: WiFi.begin() alone doesn't release
+// the WPA supplicant's group-key IE buffers on reason 26/32 rejection.
+static void _wifiJoin(const char* ssid, const char* pass) {
+    WiFi.mode(WIFI_OFF);
+    delay(400);
+    WiFi.mode(WIFI_STA);
+    WiFi.setAutoReconnect(false);
+    wifi_config_t conf = {};
+    strlcpy((char*)conf.sta.ssid,     ssid, sizeof(conf.sta.ssid));
+    strlcpy((char*)conf.sta.password, pass, sizeof(conf.sta.password));
+    conf.sta.threshold.authmode = WIFI_AUTH_WPA2_WPA3_PSK;
+    conf.sta.pmf_cfg.capable    = true;
+    conf.sta.pmf_cfg.required   = false;
+#if defined(WPA3_SAE_PWE_BOTH)
+    conf.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;
+#endif
+    esp_wifi_set_config(WIFI_IF_STA, &conf);
+    esp_wifi_connect();
+}
 
 // ── File-scope state shared with WiFiManager callbacks ────────────────────
 static IrisFace* _facePtr   = nullptr;
@@ -51,8 +73,7 @@ void IrisWifi::begin(IrisFace* face) {
                 _wifiDisconnReason = info.wifi_sta_disconnected.reason;
         }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
 
-        WiFi.mode(WIFI_STA);
-        WiFi.begin(wSSID.c_str(), wPass.c_str());
+        _wifiJoin(wSSID.c_str(), wPass.c_str());
 
         // Show the SSID we're actually trying — catches + → space mangling
         String ssidTag = ">" + (wSSID.length() > 11 ? wSSID.substring(0, 11) + "~" : wSSID);
@@ -94,12 +115,15 @@ void IrisWifi::begin(IrisFace* face) {
     }
 
     // ── Phase 2: WiFiManager captive portal ───────────────────────────────────
-    // Erase ESP32 WiFi NVS unconditionally before opening the portal.
-    // This covers the Phase-1-skipped case (empty "iris" NVS on first boot)
-    // where disconnect(true,true) hasn't run yet, so WiFiManager can't silently
-    // auto-connect to a stale network and must always go through the portal.
-    WiFi.disconnect(true, true);
+    // Erase ESP32 WiFi NVS unconditionally so WiFiManager cannot silently
+    // auto-connect to a stale network before opening the portal.
+    WiFi.disconnect(false, true);   // eraseap=true, wifioff=false — keep stack up
     delay(100);
+    // Ensure WiFi is in STA mode (not OFF) before WiFiManager starts.
+    // disconnect(true,true) above can leave WiFi OFF; starting AP_STA from OFF
+    // on IDF5 may silently fail to bring up the SoftAP.
+    WiFi.mode(WIFI_STA);
+    delay(200);
 
     // Show portal state on display before autoConnect() blocks the loop.
     _face->setState(IrisState::CONFIG_PORTAL);
@@ -178,4 +202,15 @@ void IrisWifi::_saveWifiPrefs(const String& ssid, const String& pass) {
     p.putString(NVS_KEY_WIFI_SSID, ssid);
     p.putString(NVS_KEY_WIFI_PASS, pass);
     p.end();
+}
+
+void IrisWifi::reconnect() {
+    String ssid, pass;
+    _loadWifiPrefs(ssid, pass);
+    if (ssid.length() == 0) return;
+    _wifiJoin(ssid.c_str(), pass.c_str());
+}
+
+void IrisWifi::clearWifiCreds() {
+    _saveWifiPrefs("", "");
 }

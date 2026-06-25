@@ -173,6 +173,10 @@ static void render(float t) {
 
     _cv.fillScreen(C_BLK);
 
+    // 0 — crescent moon, top-right corner (status indicator, dims with face brightness)
+    _cv.fillSmoothCircle(116, 18, 8, dimC(C_RIM, faceBright * 0.5f));
+    _cv.fillSmoothCircle(120, 14, 7, C_BLK);   // carve → waxing crescent
+
     // 1 — outer glow
     _cv.fillSmoothCircle(FCX, FCY + oy, GLOWR, dimC(C_GLOW, faceBright * 0.7f));
 

@@ -10,6 +10,8 @@ class IrisWifi {
     // On return, call isConnected() to check result.
     void   begin(IrisFace* face);
     bool   isConnected() const;
+    void   reconnect();
+    void   clearWifiCreds();
     String getPh3b3Host() const { return _ph3b3Host; }
     int    getPh3b3Port() const { return _ph3b3Port; }
 

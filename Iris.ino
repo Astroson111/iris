@@ -53,7 +53,54 @@ void setup() {
         default: snprintf(rrBuf, sizeof(rrBuf), "RST:%d", (int)_lastReset); break;
     }
     irisFace.setState(IrisState::BOOT, rrBuf);
-    faceDelay(3000);  // hold long enough to read before WiFi starts
+
+    // Boot screen: 6s diagnostic window. BtnA single action, fires on release.
+    //   Hold ≥1.5 s then release (before 3 s)  →  clear WiFi creds + portal
+    //   Hold to 3 s continuous                 →  AXP2101 hardware power-off
+    //   At 1.5 s display changes to "release: reset WiFi"
+    {
+        bool     armed    = false;
+        uint32_t pressAt  = 0;
+        uint8_t  label    = 0;   // 0 = boot reason   1 = release hint
+        bool     done     = false;
+        uint32_t deadline = millis() + 6000UL;
+
+        // Catch button already held at cold boot (pressed before M5.begin())
+        M5.update();
+        if (M5.BtnA.isPressed()) { armed = true; pressAt = millis(); }
+
+        while (!done && millis() < deadline) {
+            M5.update();
+            irisFace.update();
+
+            if (!armed && M5.BtnA.wasPressed()) {
+                armed   = true;
+                pressAt = millis();
+            }
+
+            if (armed) {
+                uint32_t held     = millis() - pressAt;
+                uint8_t  newLabel = (held >= 1500) ? 1 : 0;
+                if (newLabel != label) {
+                    label = newLabel;
+                    irisFace.setStatusLine(label == 1 ? "release: reset WiFi" : rrBuf);
+                    irisFace.update();
+                }
+
+                if (M5.BtnA.wasReleased()) {
+                    if (held >= 1500) {
+                        irisWifi.clearWifiCreds();
+                        irisFace.setStatusLine("WiFi creds cleared");
+                        irisFace.update();
+                        delay(1500);
+                    }
+                    done = true;
+                }
+                // AXP2101 hardware owns 3s+ continuous hold — no software power-off here
+            }
+            delay(20);
+        }
+    }
 
     irisWifi.begin(&irisFace);
 
@@ -142,11 +189,30 @@ void loop() {
         }
     }
 
-    // ── WiFi watchdog ─────────────────────────────────────────────────────────
+    // ── WiFi watchdog + reconnect supervisor ──────────────────────────────────
+    static uint32_t sLastReconnectMs = 0;
+    static int      sReconnectFail   = 0;
+    static const int RECONNECT_HARD  = 8;
+
     if (WiFi.status() != WL_CONNECTED) {
         if (irisFace.getState() != IrisState::WIFI_CONNECTING)
             irisFace.setState(IrisState::WIFI_CONNECTING);
+
+        uint32_t now2    = millis();
+        uint32_t interval = (sReconnectFail >= RECONNECT_HARD) ? 60000U : 15000U;
+        if (now2 - sLastReconnectMs >= interval) {
+            sLastReconnectMs = now2;
+            if (ESP.getMaxAllocHeap() >= 80000) {
+                irisWifi.reconnect();
+                sReconnectFail++;
+            } else {
+                WiFi.mode(WIFI_OFF);
+                delay(100);
+                WiFi.mode(WIFI_STA);
+            }
+        }
     } else {
+        sReconnectFail = 0;
         irisPh3b3.update();
     }
 
