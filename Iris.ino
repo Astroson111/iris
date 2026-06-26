@@ -54,49 +54,32 @@ void setup() {
     }
     irisFace.setState(IrisState::BOOT, rrBuf);
 
-    // Boot screen: 6s diagnostic window. BtnA single action, fires on release.
-    //   Hold ≥1.5 s then release (before 3 s)  →  clear WiFi creds + portal
-    //   Hold to 3 s continuous                 →  AXP2101 hardware power-off
-    //   At 1.5 s display changes to "release: reset WiFi"
+    // Boot screen: 6s window. Any BtnA tap → clear WiFi creds and re-run portal.
+    // No hold timing: just tap and release. AXP2101 still cuts power at 3s+ hold
+    // (hardware, can't override) — a quick tap is nowhere near that threshold.
+    // If BtnA was already held at power-on, drain it first; only count fresh presses.
     {
-        bool     armed    = false;
-        uint32_t pressAt  = 0;
-        uint8_t  label    = 0;   // 0 = boot reason   1 = release hint
         bool     done     = false;
         uint32_t deadline = millis() + 6000UL;
 
-        // Catch button already held at cold boot (pressed before M5.begin())
         M5.update();
-        if (M5.BtnA.isPressed()) { armed = true; pressAt = millis(); }
+        bool bootHeld = M5.BtnA.isPressed();  // absorb power-on button press
+
+        irisFace.setStatusLine("tap A: reset WiFi");
+        irisFace.update();
 
         while (!done && millis() < deadline) {
             M5.update();
             irisFace.update();
 
-            if (!armed && M5.BtnA.wasPressed()) {
-                armed   = true;
-                pressAt = millis();
-            }
-
-            if (armed) {
-                uint32_t held     = millis() - pressAt;
-                uint8_t  newLabel = (held >= 1500) ? 1 : 0;
-                if (newLabel != label) {
-                    label = newLabel;
-                    irisFace.setStatusLine(label == 1 ? "release: reset WiFi" : rrBuf);
-                    irisFace.update();
-                }
-
-                if (M5.BtnA.wasReleased()) {
-                    if (held >= 1500) {
-                        irisWifi.clearWifiCreds();
-                        irisFace.setStatusLine("WiFi creds cleared");
-                        irisFace.update();
-                        delay(1500);
-                    }
-                    done = true;
-                }
-                // AXP2101 hardware owns 3s+ continuous hold — no software power-off here
+            if (bootHeld) {
+                if (!M5.BtnA.isPressed()) bootHeld = false;  // wait for power-on release
+            } else if (M5.BtnA.wasReleased()) {
+                irisWifi.clearWifiCreds();
+                irisFace.setStatusLine("WiFi creds cleared");
+                irisFace.update();
+                delay(1500);
+                done = true;
             }
             delay(20);
         }
