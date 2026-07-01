@@ -31,3 +31,12 @@
 #define FACE_SPRITE_W          135
 #define FACE_SPRITE_H          200
 #define STATUS_CENTER_Y        220             // y-centre of the status text band
+
+// ── Deep-sleep / battery save ─────────────────────────────────────────────────
+// If WiFi connects but Ph3b3 is unreachable for WIFI_PH3B3_TIMEOUT_MS after
+// boot, or if WiFi never connects at all, Iris deep-sleeps and retries every
+// SLEEP_RETRY_US microseconds. BtnA (GPIO39) also triggers an early wake.
+// GPIO39 is the only RTC-capable button on ESP32-S3; BtnB/GPIO46 is not.
+#define WIFI_PH3B3_TIMEOUT_MS  60000UL                // 60 s patience window
+#define SLEEP_RETRY_US         (5ULL * 60 * 1000000)  // 5-min deep-sleep timer
+#define SLEEP_WAKE_GPIO        39                     // BtnA — RTC-capable on S3

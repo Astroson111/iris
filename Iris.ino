@@ -8,6 +8,7 @@
 
 #include <M5Unified.h>
 #include <WiFi.h>
+#include <esp_sleep.h>
 
 #include "config.h"
 #include "face.h"
@@ -21,6 +22,21 @@ IrisPh3b3  irisPh3b3;
 static void faceDelay(uint32_t ms) {
     uint32_t end = millis() + ms;
     while (millis() < end) { irisFace.update(); delay(20); }
+}
+
+// Show the sleeping face for 2 s so the user sees WHY she went dark, then
+// arm both the 5-min timer (mandatory auto-retry) and BtnA ext1 wake (bonus
+// manual override), cut display backlight + WiFi radio, and enter deep sleep.
+// esp_deep_sleep_start() never returns — next execution is setup() on wake.
+static void goToSleep(const char* reason) {
+    irisFace.setState(IrisState::SLEEPING, reason);
+    faceDelay(2000);
+    WiFi.mode(WIFI_OFF);
+    M5.Speaker.end();
+    M5.Display.setBrightness(0);
+    esp_sleep_enable_timer_wakeup(SLEEP_RETRY_US);
+    esp_sleep_enable_ext1_wakeup(1ULL << SLEEP_WAKE_GPIO, ESP_EXT1_WAKEUP_ANY_LOW);
+    esp_deep_sleep_start();
 }
 
 static const int PTT_RATE = 16000;
@@ -50,6 +66,11 @@ void setup() {
         case ESP_RST_INT_WDT:  strcpy(rrBuf, "RST:IWDT");     break;
         case ESP_RST_SW:       strcpy(rrBuf, "RST:SW");        break;
         case ESP_RST_POWERON:  strcpy(rrBuf, "RST:POWERON");   break;
+        case ESP_RST_DEEPSLEEP: {
+            esp_sleep_wakeup_cause_t wc = esp_sleep_get_wakeup_cause();
+            strcpy(rrBuf, wc == ESP_SLEEP_WAKEUP_TIMER ? "WAKE:TIMER" : "WAKE:BTN");
+            break;
+        }
         default: snprintf(rrBuf, sizeof(rrBuf), "RST:%d", (int)_lastReset); break;
     }
     irisFace.setState(IrisState::BOOT, rrBuf);
@@ -88,9 +109,7 @@ void setup() {
     irisWifi.begin(&irisFace);
 
     if (!irisWifi.isConnected()) {
-        irisFace.setState(IrisState::WIFI_CONNECTING, "No WiFi — rebooting");
-        faceDelay(3000);
-        ESP.restart();
+        goToSleep("no WiFi - sleeping");
     }
 
     irisFace.setState(IrisState::PH3B3_SEARCHING);
@@ -196,6 +215,31 @@ void loop() {
         }
     } else {
         sReconnectFail = 0;
+
+        // ── Ph3b3 boot timeout ────────────────────────────────────────────────
+        // Armed once on first WiFi connect. If Ph3b3 never responds healthy
+        // within WIFI_PH3B3_TIMEOUT_MS, deep-sleep and retry in 5 min.
+        // Cancelled permanently by sEverHealthy — never fires after a good
+        // connection, even if Ph3b3 later goes down. Portal path is exempt:
+        // this block only runs when WL_CONNECTED, which the portal never is.
+        static bool     sEverHealthy  = false;
+        static uint32_t sPh3bDeadline = 0;
+        static bool     sSleepArmed   = false;
+
+        if (!sEverHealthy) {
+            if (irisFace.getState() == IrisState::PH3B3_HEALTHY) {
+                sEverHealthy = true;
+                sSleepArmed  = false;
+            } else {
+                if (!sSleepArmed) {
+                    sPh3bDeadline = millis() + WIFI_PH3B3_TIMEOUT_MS;
+                    sSleepArmed   = true;
+                } else if (millis() >= sPh3bDeadline) {
+                    goToSleep("no Ph3b3 - sleeping");
+                }
+            }
+        }
+
         irisPh3b3.update();
     }
 

@@ -11,6 +11,7 @@ enum class IrisState : uint8_t {
     LISTENING,
     THINKING,
     SPEAKING,
+    SLEEPING,    // deep-sleep pending: eyes shut, dim, crescent prominent
 };
 
 class IrisFace {

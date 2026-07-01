@@ -169,6 +169,10 @@ static void render(float t) {
             faceBright = 1.0f;
             mouthRY    = 7.0f + _speak * 9.0f;
             break;
+        case IrisState::SLEEPING:
+            faceBright = 0.15f;
+            flatMouth  = true;
+            break;
     }
 
     _cv.fillScreen(C_BLK);
@@ -300,6 +304,7 @@ void IrisFace::update() {
     }
     if (_fstate == IrisState::BOOT)      _blink = 0.7f;
     if (_fstate == IrisState::LISTENING) _blink = 0.0f;  // eyes wide open while listening
+    if (_fstate == IrisState::SLEEPING)  _blink = 1.0f;  // eyes fully shut before deep-sleep
 
     // Mouth decay
     float target = (now - _levelMs < 300) ? _levelVal : 0.0f;
@@ -333,6 +338,7 @@ void IrisFace::setState(IrisState s, const char* speechOverride) {
         case IrisState::LISTENING:         _statusTxt = "listening...";  break;
         case IrisState::THINKING:          _statusTxt = "thinking...";   break;
         case IrisState::SPEAKING:          _statusTxt = "speaking...";   break;
+        case IrisState::SLEEPING:          _statusTxt = "sleeping...";   break;
     }
     if (speechOverride) _statusTxt = speechOverride;
 }
