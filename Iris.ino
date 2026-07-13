@@ -52,7 +52,7 @@ void setup() {
     M5.begin(cfg);
 
     M5.Speaker.begin();
-    M5.Speaker.setVolume(200);
+    M5.Speaker.setVolume(IRIS_VOL_LEVELS[irisWifi.getVolIdx()]);   // Medium default until NVS loads
 
     irisFace.begin();
 
@@ -107,6 +107,8 @@ void setup() {
     }
 
     irisWifi.begin(&irisFace);
+    // NVS config is loaded now → apply the stored Volume preset (authoritative).
+    M5.Speaker.setVolume(IRIS_VOL_LEVELS[irisWifi.getVolIdx()]);
 
     if (!irisWifi.isConnected()) {
         goToSleep("no WiFi - sleeping");
@@ -172,7 +174,7 @@ void loop() {
             M5.Mic.end();
             M5.Speaker.end();
             M5.Speaker.begin();
-            M5.Speaker.setVolume(200);
+            M5.Speaker.setVolume(IRIS_VOL_LEVELS[irisWifi.getVolIdx()]);   // Volume preset
             if (sPttBuf && sPttSamples > 0)
                 irisPh3b3.doPtt(&sPttBuf, sPttSamples);
             if (sPttBuf) { free(sPttBuf); sPttBuf = nullptr; }
