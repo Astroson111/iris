@@ -83,9 +83,10 @@ the avatar sprite is created.
 exist, or the connection fails after 15 seconds, she opens a SoftAP called **Iris-Setup**
 and starts a captive web portal; her face goes *neutral* and the status band shows the
 portal IP (`192.168.4.1`).  Connect your phone or laptop to Iris-Setup, navigate to that
-address, pick your WiFi network, enter the password, and optionally update the Ph3b3 host
-and port.  Hit Save.  Iris reconnects and the portal closes.  Credentials and Ph3b3
-address are saved to NVS for all future boots.
+address, pick your WiFi network, enter the password, optionally update the Ph3b3 host
+and port, and set the **Volume** and **Microphone** levels (see below).  Hit Save.  Iris
+reconnects and the portal closes.  Credentials, Ph3b3 address, and audio presets are saved
+to NVS for all future boots.
 
 **Ph3b3 discovery** — Once on WiFi, Iris calls `WiFi.hostByName("ph3b3.local")` to resolve
 Ph3b3's address via mDNS.  If mDNS fails, she falls back to the configured host (default
@@ -95,6 +96,27 @@ Ph3b3's address via mDNS.  If mDNS fails, she falls back to the configured host 
 using `WiFiClientSecure` with `setInsecure()` (self-signed cert) and HTTP Basic auth.
 A 2xx response makes her face go **happy**.  Any failure flips her to **sad**.  If WiFi
 drops between polls she shows *doubt* until the ESP32's auto-reconnect kicks in.
+
+---
+
+## Audio settings
+
+Set in the **Iris-Setup** portal (set-and-forget — no runtime buttons or gestures). Both are
+three-way presets stored as a preset index in NVS (namespace `iris`, keys `vol` / `mic`),
+read and applied at boot. Re-entering setup shows the currently stored values. Fresh
+enrollment defaults to **Medium** for both — she never boots silent, blasting, or deaf.
+
+| Field | Presets | Effect |
+|---|---|---|
+| **Volume** | Low 40% · **Medium 70%** · High 100% | Scales `M5.Speaker` output. Iris plays Ph3b3's TTS **locally** on-device (the `/chat` audio reply), so volume is enforced on the ESP32 — not on the Nyx host. |
+| **Microphone** | Low · **Medium** · High | Mic capture magnification (8 / 16 / 32; **Medium = 16**, the tuned default). Applied to the PTT capture before audio is streamed to Whisper on Nyx. |
+
+Notes:
+- **Medium mic = prior behavior exactly** (16) — it's the calibration anchor.
+- Nyx does no input normalization before Whisper (only an rms silence gate), so device gain
+  reaches Whisper directly. Keep **Low** loud enough to clear that gate at arm's length.
+- Endpoint tuning (`VAD_SILENCE_MS`) was done at Medium — it is **not** retuned per preset. If a
+  higher mic level ever holds sessions open on room noise, lower the High multiplier instead.
 
 ---
 
