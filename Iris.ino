@@ -152,7 +152,7 @@ void loop() {
                 if (M5.Speaker.isPlaying()) M5.Speaker.stop();
                 auto mc = M5.Mic.config();
                 mc.sample_rate   = PTT_RATE;
-                mc.magnification = 16;
+                mc.magnification = IRIS_MIC_LEVELS[irisWifi.getMicIdx()];   // Mic preset (Med=16=prior)
                 M5.Mic.config(mc);
                 M5.Mic.begin();
                 irisFace.setState(IrisState::LISTENING);
