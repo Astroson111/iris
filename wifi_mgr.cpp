@@ -173,8 +173,17 @@ void IrisWifi::_runPortal() {
         page += F("'></div><div><label>Port</label>"
                   "<input name='ph3b3port' value='");
         page += String(_ph3b3Port);
-        page += F("'></div></div></div>"
-                  "<button type='submit'>Save &amp; Reboot</button>"
+        page += F("'></div></div></div>");
+        // Audio presets — three-way selects, pre-selected to the stored values.
+        page += F("<div class='srv'><h3>Audio</h3><div class='row2'>"
+                  "<div><label>Volume</label><select name='vol'>");
+        for (int i = 0; i < 3; i++)
+            page += "<option value='" + String(i) + "'" + (i == _volIdx ? " selected" : "") + ">" + IRIS_PRESET_NAMES[i] + "</option>";
+        page += F("</select></div><div><label>Microphone</label><select name='mic'>");
+        for (int i = 0; i < 3; i++)
+            page += "<option value='" + String(i) + "'" + (i == _micIdx ? " selected" : "") + ">" + IRIS_PRESET_NAMES[i] + "</option>";
+        page += F("</select></div></div></div>");
+        page += F("<button type='submit'>Save &amp; Reboot</button>"
                   "<small>Clear an SSID field to remove that slot. "
                   "Leave password blank to keep the existing saved password.</small>"
                   "</form>"
@@ -258,6 +267,17 @@ void IrisWifi::_runPortal() {
             _savePrefs(newHost.c_str(), newPort);
         }
 
+        // Audio presets — store selected indices (Medium if the field is absent).
+        {
+            String vArg = server.arg("vol"), mArg = server.arg("mic");
+            _volIdx = vArg.length() ? constrain(vArg.toInt(), 0, 2) : IRIS_AUDIO_DEFAULT;
+            _micIdx = mArg.length() ? constrain(mArg.toInt(), 0, 2) : IRIS_AUDIO_DEFAULT;
+            Preferences p; p.begin(NVS_NAMESPACE, false);
+            p.putInt(NVS_KEY_VOLUME, _volIdx);
+            p.putInt(NVS_KEY_MIC,    _micIdx);
+            p.end();
+        }
+
         _saveWifiSlots(newSSIDs, newPasses, newCount);
 
         server.send(200, "text/html",
@@ -317,6 +337,8 @@ void IrisWifi::_loadPrefs() {
     p.begin(NVS_NAMESPACE, /*readOnly=*/true);
     _ph3b3Host = p.getString(NVS_KEY_HOST, PH3B3_FALLBACK_HOST);
     _ph3b3Port = p.getInt(NVS_KEY_PORT, PH3B3_FALLBACK_PORT);
+    _volIdx    = constrain(p.getInt(NVS_KEY_VOLUME, IRIS_AUDIO_DEFAULT), 0, 2);
+    _micIdx    = constrain(p.getInt(NVS_KEY_MIC,    IRIS_AUDIO_DEFAULT), 0, 2);
     p.end();
 }
 

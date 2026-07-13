@@ -14,11 +14,15 @@ class IrisWifi {
     void   clearWifiCreds();     // wipe all saved networks (sets count=0)
     String getPh3b3Host() const { return _ph3b3Host; }
     int    getPh3b3Port() const { return _ph3b3Port; }
+    int    getVolIdx()    const { return _volIdx; }   // 0/1/2 → IRIS_VOL_LEVELS
+    int    getMicIdx()    const { return _micIdx; }   // 0/1/2 → IRIS_MIC_LEVELS
 
  private:
     IrisFace* _face      = nullptr;
     String    _ph3b3Host;
     int       _ph3b3Port = 0;
+    int       _volIdx    = 1;   // Medium (IRIS_AUDIO_DEFAULT) until _loadPrefs runs
+    int       _micIdx    = 1;
 
     void _loadPrefs();
     void _savePrefs(const char* host, int port);

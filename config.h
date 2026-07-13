@@ -23,6 +23,15 @@
 #define NVS_KEY_WIFI_COUNT     "wifi_count"
 // Per-slot keys built at runtime: "wifi_ssid_0".."wifi_ssid_3", "wifi_pass_0".."wifi_pass_3"
 
+// ── Audio presets (Volume / Mic gain) — set in the setup portal, NVS-persisted ─
+// Reuses the Dio Settings convention: preset INDEX 0/1/2 stored, Medium default.
+#define NVS_KEY_VOLUME         "vol"
+#define NVS_KEY_MIC            "mic"
+static const int   IRIS_VOL_LEVELS[3]   = {102, 178, 255};  // Low 40% / Med 70% / High 100% of M5.Speaker
+static const int   IRIS_MIC_LEVELS[3]   = {8, 16, 32};      // Low / Med(=16, current) / High mic magnification
+static const char* IRIS_PRESET_NAMES[3] = {"Low", "Medium", "High"};
+static const int   IRIS_AUDIO_DEFAULT   = 1;                // Medium for both (fresh enrollment never silent/blasting/deaf)
+
 // ── Display layout ────────────────────────────────────────────────────────────
 // StickS3: ST7789 135×240, portrait.
 // Avatar sprite occupies top 200 px; status band lives in the remaining 40 px.
