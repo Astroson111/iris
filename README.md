@@ -108,12 +108,12 @@ enrollment defaults to **Medium** for both — she never boots silent, blasting,
 
 | Field | Presets | Effect |
 |---|---|---|
-| **Volume** | Low 40% · **Medium 70%** · High 100% | Scales `M5.Speaker` output. Iris plays Ph3b3's TTS **locally** on-device (the `/chat` audio reply), so volume is enforced on the ESP32 — not on the Nyx host. |
-| **Microphone** | Low · **Medium** · High | Mic capture magnification (8 / 16 / 32; **Medium = 16**, the tuned default). Applied to the PTT capture before audio is streamed to Whisper on Nyx. |
+| **Volume** | Low 40% · **Medium 70%** · High 100% | Scales `M5.Speaker` output. Iris plays Ph3b3's TTS **locally** on-device (the `/chat` audio reply), so volume is enforced on the ESP32 — not on the server. |
+| **Microphone** | Low · **Medium** · High | Mic capture magnification (8 / 16 / 32; **Medium = 16**, the tuned default). Applied to the PTT capture before audio is streamed to Whisper on the server. |
 
 Notes:
 - **Medium mic = prior behavior exactly** (16) — it's the calibration anchor.
-- Nyx does no input normalization before Whisper (only an rms silence gate), so device gain
+- The server does no input normalization before Whisper (only an rms silence gate), so device gain
   reaches Whisper directly. Keep **Low** loud enough to clear that gate at arm's length.
 - Endpoint tuning (`VAD_SILENCE_MS`) was done at Medium — it is **not** retuned per preset. If a
   higher mic level ever holds sessions open on room noise, lower the High multiplier instead.
