@@ -41,6 +41,9 @@ void IrisPh3b3::begin(IrisFace* face, const String& host, int port) {
     _port = port;
     _sessionId = "iris-" + String(esp_random(), HEX);
     _lastMs = millis() - PH3B3_POLL_MS;   // trigger first check immediately
+    // STEP 0 visibility (serial is dead): show the active target on boot so the
+    // screen reveals exactly which host:port she is dialing.
+    if (_face) _face->setStatusLine((_host + ":" + String(_port)).c_str());
 }
 
 void IrisPh3b3::update() {
@@ -53,7 +56,8 @@ void IrisPh3b3::update() {
     if (millis() - _lastMs < PH3B3_POLL_MS) return;
     _lastMs = millis();
 
-    if (_checkHealth()) {
+    int code = _checkHealth();
+    if (code >= 200 && code < 300) {
         _face->setState(IrisState::PH3B3_HEALTHY);
         if (!_greetedOnce) {
             _face->setBubble("Hello! Ph3b3 is online and ready.");
@@ -61,7 +65,15 @@ void IrisPh3b3::update() {
             _greetClearMs = millis() + 5000;
         }
     } else {
-        _face->setState(IrisState::PH3B3_UNREACHABLE);
+        // Cause-visible status (serial is dead, screen is the instrument):
+        //   "denied"   → reached Nyx but auth rejected (401/403)
+        //   "no route" → never reached the host (connect/TLS/timeout, code < 0)
+        //   "away H:P" → other non-2xx; keep host:port for the generic case
+        String line;
+        if (code == 401 || code == 403) line = "denied";
+        else if (code < 0)              line = "no route";
+        else                            line = "away " + _host + ":" + String(_port);
+        _face->setState(IrisState::PH3B3_UNREACHABLE, line.c_str());
         _face->clearBubble();
         _greetedOnce = false;
         _greetClearMs = 0;
@@ -75,19 +87,152 @@ void IrisPh3b3::doChat(const String& message) {
     _face->setState(IrisState::THINKING);
     _face->update();
 
+    // Chunked TTS consumer (ported from Dio). POST /chat/stream for a manifest
+    // {stream_id, chunk_count, text, audio(chunk0), response}, then lazily GET
+    // /tts/chunk/{sid}/{n} for the rest — each a SHORT request the server
+    // synthesises on demand (with read-ahead). Replaces the old monolithic /chat:
+    // its single multi-MB WAV got torn down mid-send when Iris read it at playback
+    // speed, so long stories cut off. Bounded per-chunk requests never do.
     WiFiClientSecure tls;
     tls.setInsecure();
-    // WiFiClientSecure.setTimeout() takes SECONDS (not ms) and sets SO_RCVTIMEO.
-    // Without this, the default socket timeout is ~5 s — far too short for LLM+TTS.
-    tls.setTimeout(90);
+    tls.setTimeout(30);              // per-recv floor (s); the watchdog is the real control
     HTTPClient http;
-    String url = "https://" + _host + ":" + String(_port) + "/chat";
-    if (!http.begin(tls, url)) {
+    http.setReuse(true);             // keep-alive socket reused across manifest + chunk GETs
+    String base = "https://" + _host + ":" + String(_port);
+
+    // ── Shared decode/playback state (persists across chunks → gapless queue) ──
+    int   fillIdx       = 0;
+    int   chunkPos      = 0;
+    int   wavHdrSkipped = 0;
+    uint8_t halfLo      = 0;
+    bool  halfReady     = false;
+    char  b4[4]; int b4pos = 0;
+    bool  keepGoing     = true;      // false at end of ONE chunk's audio field
+    bool  streamAbort   = false;     // barge-in / watchdog → stop the whole reply
+
+    auto flushChunk = [&]() {
+        if (chunkPos == 0) return;
+        while (M5.Speaker.isPlaying()) delay(1);
+        if (streamAbort) return;     // barge-in/watchdog only; gating on !keepGoing
+        M5.Speaker.playRaw(s_pcm[fillIdx], chunkPos, 22050, false, 1, 0);
+        fillIdx ^= 1;
+        chunkPos = 0;
+    };
+
+    auto pushByte = [&](uint8_t b) {
+        if (wavHdrSkipped++ < 44) return;   // skip THIS chunk's 44-byte WAV header
+        if (!halfReady) { halfLo = b; halfReady = true; return; }
+        s_pcm[fillIdx][chunkPos++] = (int16_t)((b << 8) | halfLo);
+        halfReady = false;
+        if (chunkPos == 1024) flushChunk();
+    };
+
+    auto feedCh = [&](char ch) {
+        if (!keepGoing) return;
+        if (ch == '"') { keepGoing = false; return; }
+        int v = b64val(ch);
+        if (v < 0) return;
+        b4[b4pos++] = ch;
+        if (b4pos == 4) {
+            int v0=b64val(b4[0]), v1=b64val(b4[1]), v2=b64val(b4[2]), v3=b64val(b4[3]);
+            if (v0 >= 0 && v1 >= 0) {
+                pushByte((uint8_t)((v0<<2)|(v1>>4)));
+                if (v2 >= 0 && b4[2] != '=') {
+                    pushByte((uint8_t)((v1<<4)|(v2>>2)));
+                    if (v3 >= 0 && b4[3] != '=') pushByte((uint8_t)((v2<<6)|v3));
+                }
+            }
+            b4pos = 0;
+        }
+    };
+
+    // Read a response head into s_peek until "audio":" is buffered. Inter-byte
+    // watchdog (reset on bytes, give up after PH3B3_RX_SILENCE_FIRST_MS of dead
+    // air) — never a wall-clock cap. Returns bytes buffered.
+    auto fillPeek = [&]() -> int {
+        auto* raw = http.getStreamPtr();
+        raw->setTimeout(30000);
+        int bodyTotal = http.getSize();
+        int pl = 0;
+        uint32_t lastRxMs = millis();
+        while (pl < (int)(sizeof(s_peek) - 1)) {
+            int avail = raw->available();
+            if (avail > 0) {
+                int n = min(avail, (int)(sizeof(s_peek) - 1) - pl);
+                pl += raw->readBytes(s_peek + pl, n);
+                s_peek[pl] = '\0';
+                lastRxMs = millis();
+                if (pl > 20 && strstr(s_peek, "\"audio\":\"")) break;
+                if (bodyTotal > 0 && pl >= bodyTotal) break;
+            } else if (!raw->connected()) {
+                break;
+            } else if (bodyTotal > 0 && pl >= bodyTotal) {
+                break;
+            } else if (millis() - lastRxMs >= PH3B3_RX_SILENCE_FIRST_MS) {
+                break;
+            } else {
+                _face->update();
+                delay(10);
+            }
+        }
+        s_peek[pl] = '\0';
+        return pl;
+    };
+
+    // Decode + play ONE chunk's base64 "audio" field. s_peek[audioStart..peekLen)
+    // is the already-read head; then drain the live stream to the field's closing
+    // quote / barge-in / no-progress watchdog. Reads one byte per turn so the face
+    // ticks every ~33 ms and playback (flushChunk) paces the read. Completion of a
+    // chunk = its closing quote; the watchdog only fires on a genuine stall.
+    auto playField = [&](int peekLen, int audioStart) {
+        wavHdrSkipped = 0; halfReady = false; b4pos = 0; keepGoing = true;
+        auto* raw = http.getStreamPtr();
+        for (int i = audioStart; i < peekLen && keepGoing; i++) feedCh(s_peek[i]);
+        uint32_t lastRxMs = millis(), nextFaceMs = millis() + 33;
+        while (keepGoing) {
+            M5.update();
+            if (M5.BtnA.wasPressed()) { M5.Speaker.stop(); keepGoing = false; streamAbort = true; break; }
+            if (millis() >= nextFaceMs) {
+                _face->setSpeakingLevel(0.5f);
+                _face->update();
+                nextFaceMs = millis() + 33;
+            }
+            int c = raw->read();
+            if (c < 0) {
+                if (!raw->connected() && raw->available() == 0) break;  // chunk stream closed
+                if (M5.Speaker.isPlaying()) { lastRxMs = millis(); }    // audio still draining = progress
+                else if (millis() - lastRxMs > PH3B3_RX_SILENCE_STREAM_MS) {
+                    _face->setStatusLine("stream stalled");
+                    keepGoing = false; streamAbort = true;
+                    break;
+                }
+                delay(1);
+                continue;
+            }
+            lastRxMs = millis();   // byte received → reset the silence watchdog
+            feedCh((char)c);
+        }
+        flushChunk();
+    };
+
+    // Drain trailing body bytes (the small tail after a chunk's audio field, or
+    // the manifest's "response") so the reused keep-alive socket is clean.
+    auto drainTail = [&]() {
+        auto* raw = http.getStreamPtr();
+        uint32_t idle = millis();
+        while (millis() - idle < 60) {
+            if (raw->available()) { raw->read(); idle = millis(); }
+            else delay(2);
+        }
+    };
+
+    // ── Manifest: POST /chat/stream ──
+    if (!http.begin(tls, base + "/chat/stream")) {
         _face->setState(IrisState::PH3B3_UNREACHABLE);
         return;
     }
-    http.setConnectTimeout(90000);
-    http.setTimeout(120000);
+    http.setConnectTimeout(20000);
+    http.setTimeout(60000);
     http.setAuthorization(PH3B3_AUTH_USER, PH3B3_AUTH_PASS);
     http.addHeader("Content-Type", "application/json");
     http.addHeader("X-Ph3b3-Device", "iris");
@@ -109,118 +254,59 @@ void IrisPh3b3::doChat(const String& message) {
         return;
     }
 
-    // Read up to 6KB from the stream, polling so the face stays alive.
-    // readBytes() alone can stall if the response is smaller than the buffer.
-    auto* raw = http.getStreamPtr();
-    raw->setTimeout(30000);
-    int peekLen = 0;
-    uint32_t peekDeadline = millis() + 60000;
-    while (peekLen < (int)(sizeof(s_peek) - 1) && millis() < peekDeadline) {
-        int avail = raw->available();
-        if (avail > 0) {
-            int n = min(avail, (int)(sizeof(s_peek) - 1) - peekLen);
-            peekLen += raw->readBytes(s_peek + peekLen, n);
-            s_peek[peekLen] = '\0';
-            // Stop early once we've captured the audio tag — we have everything we need.
-            if (peekLen > 50 && strstr(s_peek, "\"audio\":\"")) break;
-        } else if (!raw->connected()) {
-            break;
-        } else {
-            _face->update();
-            delay(10);
-        }
-    }
-    s_peek[peekLen] = '\0';
+    // Manifest: stream_id + chunk_count + chunk 0's text & audio. These keys
+    // precede "audio"/"response" in the JSON, so they're always inside the 6 KB
+    // head regardless of reply length.
+    int peekLen = fillPeek();
+    JsonDocument filter;
+    filter["stream_id"]   = true;
+    filter["chunk_count"] = true;
+    filter["text"]        = true;
+    JsonDocument jdoc;
+    deserializeJson(jdoc, s_peek, peekLen, DeserializationOption::Filter(filter));
+    const char* sid = jdoc["stream_id"];
+    String streamId = (sid && *sid) ? String(sid) : "";
+    int chunkCount  = jdoc["chunk_count"] | 0;
+    const char* t0  = jdoc["text"];
+    String chunk0Text = (t0 && *t0) ? String(t0) : "";
 
-    // Extract response text with ArduinoJson filter (cheap — only parses "response").
-    String responseText;
-    {
-        JsonDocument filter; filter["response"] = true;
-        JsonDocument doc;
-        deserializeJson(doc, s_peek, peekLen, DeserializationOption::Filter(filter));
-        const char* r = doc["response"];
-        if (r && *r) responseText = String(r);
-    }
+    char* foundTag = strstr(s_peek, "\"audio\":\"");
+    int audioStart = foundTag ? (int)(foundTag - s_peek) + 9 : -1;   // 9 = strlen("\"audio\":\"")
 
-    if (responseText.length() > 0) {
+    if (chunkCount > 0 && audioStart >= 0) {
         _face->setState(IrisState::SPEAKING);
         _face->setStatusLine("ph3b3 says:");
-        _face->setBubble(responseText);
+        if (chunk0Text.length()) _face->setBubble(chunk0Text);
         _face->update();
-    }
-
-    // Locate start of "audio" base64 string in peek buffer.
-    const char* audioTag = "\"audio\":\"";
-    char* foundAudio = strstr(s_peek, audioTag);
-    int audioStart = foundAudio ? (int)(foundAudio - s_peek) + (int)strlen(audioTag) : -1;
-
-    if (audioStart >= 0) {
-        int   fillIdx       = 0;
-        int   chunkPos      = 0;
-        int   wavHdrSkipped = 0;
-        uint8_t halfLo      = 0;
-        bool  halfReady     = false;
-        char  b4[4]; int b4pos = 0;
-        bool  keepGoing     = true;
-
-        auto flushChunk = [&]() {
-            if (chunkPos == 0) return;
-            while (M5.Speaker.isPlaying()) delay(1);
-            if (!keepGoing) return;
-            M5.Speaker.playRaw(s_pcm[fillIdx], chunkPos, 22050, false, 1, 0);
-            fillIdx ^= 1;
-            chunkPos = 0;
-        };
-
-        auto pushByte = [&](uint8_t b) {
-            if (wavHdrSkipped++ < 44) return;
-            if (!halfReady) { halfLo = b; halfReady = true; return; }
-            s_pcm[fillIdx][chunkPos++] = (int16_t)((b << 8) | halfLo);
-            halfReady = false;
-            if (chunkPos == 1024) flushChunk();
-        };
-
-        auto feedCh = [&](char ch) {
-            if (!keepGoing) return;
-            if (ch == '"') { keepGoing = false; return; }
-            int v = b64val(ch);
-            if (v < 0) return;
-            b4[b4pos++] = ch;
-            if (b4pos == 4) {
-                int v0=b64val(b4[0]), v1=b64val(b4[1]), v2=b64val(b4[2]), v3=b64val(b4[3]);
-                if (v0 >= 0 && v1 >= 0) {
-                    pushByte((uint8_t)((v0<<2)|(v1>>4)));
-                    if (v2 >= 0 && b4[2] != '=') {
-                        pushByte((uint8_t)((v1<<4)|(v2>>2)));
-                        if (v3 >= 0 && b4[3] != '=') pushByte((uint8_t)((v2<<6)|v3));
-                    }
-                }
-                b4pos = 0;
-            }
-        };
-
-        for (int i = audioStart; i < peekLen; i++) feedCh(s_peek[i]);
-
-        if (keepGoing) {
-            uint32_t deadline  = millis() + 90000;
-            uint32_t nextFaceMs = millis() + 33;
-            while (keepGoing && millis() < deadline) {
-                M5.update();
-                if (M5.BtnA.wasPressed()) { M5.Speaker.stop(); keepGoing = false; break; }
-                if (millis() >= nextFaceMs) {
-                    _face->setSpeakingLevel(0.5f);
-                    _face->update();
-                    nextFaceMs = millis() + 33;
-                }
-                int c = raw->read();
-                if (c < 0) { delay(1); continue; }
-                feedCh((char)c);
-            }
-        }
-
-        flushChunk();
+        playField(peekLen, audioStart);          // chunk 0 (carried in the manifest)
+        drainTail();
         http.end();
 
+        // ── Chunks 1..N-1: lazy GET, caption + play each ──
+        for (int n = 1; n < chunkCount && !streamAbort; n++) {
+            String path = base + "/tts/chunk/" + streamId + "/" + String(n);
+            if (!http.begin(tls, path)) break;
+            http.setConnectTimeout(20000);
+            http.setTimeout(60000);
+            http.setAuthorization(PH3B3_AUTH_USER, PH3B3_AUTH_PASS);
+            http.addHeader("X-Ph3b3-Device", "iris");
+            int gc = http.GET();
+            if (gc != HTTP_CODE_OK) { http.end(); break; }
+            int cpl = fillPeek();
+            JsonDocument cfilter; cfilter["text"] = true;
+            JsonDocument cjdoc;
+            deserializeJson(cjdoc, s_peek, cpl, DeserializationOption::Filter(cfilter));
+            const char* ctx = cjdoc["text"];
+            char* ct = strstr(s_peek, "\"audio\":\"");
+            int cAudio = ct ? (int)(ct - s_peek) + 9 : -1;
+            if (cAudio < 0) { http.end(); break; }
+            if (ctx && *ctx) _face->setBubble(String(ctx));   // caption follows the voice
+            playField(cpl, cAudio);
+            drainTail();
+            http.end();
+        }
+
+        // Completion = playback buffer drained (NOT stream close). Barge-in honoured.
         while (M5.Speaker.isPlaying()) {
             M5.update();
             if (M5.BtnA.wasPressed()) { M5.Speaker.stop(); break; }
@@ -338,14 +424,14 @@ void IrisPh3b3::doPtt(int16_t** ppAudio, int numSamples) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-bool IrisPh3b3::_checkHealth() {
+int IrisPh3b3::_checkHealth() {
     WiFiClientSecure client;
     client.setInsecure();
 
     HTTPClient http;
     String url = "https://" + _host + ":" + String(_port) + "/health";
 
-    if (!http.begin(client, url)) return false;
+    if (!http.begin(client, url)) return -1000;   // begin failed → no route
 
     // setConnectTimeout sets SO_RCVTIMEO on the socket; without it the default
     // 5 s can race the TLS handshake. http.setTimeout() alone is not enough.
@@ -355,5 +441,5 @@ bool IrisPh3b3::_checkHealth() {
 
     int code = http.GET();
     http.end();
-    return (code >= 200 && code < 300);
+    return code;   // 2xx healthy; 401/403 denied; <0 connection failure
 }

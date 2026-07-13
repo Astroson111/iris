@@ -10,6 +10,15 @@
 #define PH3B3_HTTP_TIMEOUT_MS  8000            // per-request timeout (TLS handshake included)
 #define PH3B3_MDNS_TIMEOUT_MS  2000            // mDNS resolution timeout (ms)
 
+// ── /chat receive watchdog ────────────────────────────────────────────────────
+// Iris caps the reply by SILENCE, not by total elapsed time. There is NO
+// wall-clock deadline keyed to request start (that always loses to a long-enough
+// answer). The read loop resets on every byte from Nyx and only gives up after
+// this many ms of dead air — long responses hold to their explicit end (the
+// closing quote of the JSON "audio" field / stream close), hung sockets don't.
+#define PH3B3_RX_SILENCE_FIRST_MS  15000       // grace before the first reply byte
+#define PH3B3_RX_SILENCE_STREAM_MS 7000        // grace between bytes once streaming
+
 // ── WiFi / captive portal ─────────────────────────────────────────────────────
 #define IRIS_AP_SSID           "Iris-Setup"    // SoftAP SSID shown in config portal
 #define PORTAL_TIMEOUT_S       180             // portal auto-closes after 3 min
