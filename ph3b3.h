@@ -27,5 +27,7 @@ class IrisPh3b3 {
     bool          _greetedOnce  = false;
     uint32_t      _greetClearMs = 0;
 
-    bool _checkHealth();
+    // Returns the HTTP status code from GET /health, or a negative value on a
+    // connection-level failure (no route / TLS / timeout). 2xx = healthy.
+    int _checkHealth();
 };
