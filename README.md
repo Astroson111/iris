@@ -6,7 +6,8 @@ Ph3b3 is online and ready.  No app, no dashboard: her expression IS the status r
 
 **Ecosystem:** [Ph3b3](https://github.com/astroson111/ph3b3) — the local server (STT · reasoning ·
 TTS) · [Dio / Dionysus](https://github.com/astroson111/Dionysus) — the Stack-Chan desktop body ·
-Iris (this repo). All local, all clients of the same server.
+[Control Panel](https://github.com/astroson111/ph3b3/tree/main/static) — the local web PWA (served
+by Ph3b3) · Iris (this repo). All local, all clients of the same server.
 
 ---
 
