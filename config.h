@@ -3,12 +3,9 @@
 #include "secrets.h"
 
 // ── Ph3b3 connection ──────────────────────────────────────────────────────────
-#define PH3B3_MDNS_HOST        "ph3b3.local"  // resolved via WiFi.hostByName / lwIP mDNS
 #define PH3B3_FALLBACK_HOST    "192.168.0.16"
 #define PH3B3_FALLBACK_PORT    7331
 #define PH3B3_POLL_MS          10000UL         // health-check interval (ms)
-#define PH3B3_HTTP_TIMEOUT_MS  8000            // per-request timeout (TLS handshake included)
-#define PH3B3_MDNS_TIMEOUT_MS  2000            // mDNS resolution timeout (ms)
 
 // ── /chat receive watchdog ────────────────────────────────────────────────────
 // Iris caps the reply by SILENCE, not by total elapsed time. There is NO
@@ -46,8 +43,6 @@ static const int   IRIS_AUDIO_DEFAULT   = 1;                // Medium for both (
 // Avatar sprite occupies top 200 px; status band lives in the remaining 40 px.
 #define SCREEN_W               135
 #define SCREEN_H               240
-#define FACE_SPRITE_W          135
-#define FACE_SPRITE_H          200
 #define STATUS_CENTER_Y        220             // y-centre of the status text band
 
 // ── Deep-sleep / battery save ─────────────────────────────────────────────────
