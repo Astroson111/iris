@@ -43,8 +43,10 @@ static const int PTT_RATE = 16000;
 static const int PTT_MAX  = PTT_RATE * 12;  // 12 s @ 16 kHz
 // Mic-prime: the first DMA buffers after M5.Mic.begin() come back pinned to the
 // −32752 rail (bit-identical across captures — a hardware settling transient,
-// not voice; diagnosed 2026-07-17). Record and DISCARD this many samples before
-// accumulating so the transient never enters sPttBuf / the WAV. 150 ms @ 16 kHz.
+// not voice; diagnosed 2026-07-17). Capture starts at button-press; these first
+// samples are streamed into a scratch buffer and DISCARDED so the transient
+// never enters sPttBuf / the WAV, while everything after is kept. 150 ms is the
+// verified-clean depth (2026-07-17 after-fix set: no rail run survived it).
 static const int PTT_PRIME = PTT_RATE * 150 / 1000;  // 2400 samples ≈ 150 ms
 
 void setup() {
@@ -139,18 +141,22 @@ void loop() {
     static bool     sPttActive  = false;  // true while mic is recording
     static int16_t* sPttBuf     = nullptr;
     static int      sPttSamples = 0;
+    static int      sPttPrimeLeft = 0;    // transient samples still to discard (streamed)
 
     if (WiFi.status() == WL_CONNECTED) {
-        // Track press start
+        // Press: begin capturing IMMEDIATELY so no opening speech is lost. We
+        // don't yet know if this is a PTT (hold) or a short tap — capture into
+        // sPttBuf regardless; the 200ms arm check below decides, and a short tap
+        // discards the buffer. The mic's begin() startup transient (first
+        // PTT_PRIME samples — a −32752 rail burst, see PTT_PRIME) is discarded as
+        // it streams in; everything after is KEPT. This recovers the 200ms
+        // arm-hold window that an at-arm prime would otherwise swallow, so a user
+        // who talks the instant they press only loses the ~transient, not 350ms.
         if (M5.BtnA.wasPressed()) {
-            sBtnADownAt = millis();
-            sPttArmed   = false;
-        }
-
-        // Arm mic after 200ms hold
-        if (M5.BtnA.isPressed() && !sPttArmed && (millis() - sBtnADownAt) >= 200) {
-            sPttArmed   = true;
-            sPttSamples = 0;
+            sBtnADownAt   = millis();
+            sPttArmed     = false;
+            sPttSamples   = 0;
+            sPttPrimeLeft = PTT_PRIME;
             sPttBuf = (int16_t*)heap_caps_malloc(PTT_MAX * 2, MALLOC_CAP_SPIRAM);
             if (sPttBuf) {
                 sPttActive = true;
@@ -160,40 +166,45 @@ void loop() {
                 mc.magnification = IRIS_MIC_LEVELS[irisWifi.getMicIdx()];   // Mic preset (Med=×8, see config.h)
                 M5.Mic.config(mc);
                 M5.Mic.begin();
-                // Prime: record and DISCARD the mic startup transient (PTT_PRIME)
-                // so the first samples that reach sPttBuf are clean. record() is
-                // double-buffered/non-blocking, so we drain isRecording() to
-                // guarantee those buffers are fully captured (and thrown away)
-                // before real accumulation. Costs ~150 ms; LISTENING (purple) is
-                // shown only AFTER, so it doubles as the "capturing now" ready cue.
-                static int16_t primeScratch[512];
-                for (int primed = 0; primed < PTT_PRIME; ) {
-                    int c = min(512, PTT_PRIME - primed);
-                    M5.Mic.record(primeScratch, c, PTT_RATE);
-                    primed += c;
-                }
-                while (M5.Mic.isRecording()) M5.delay(1);
-                irisFace.setState(IrisState::LISTENING);
-                irisFace.update();
             }
         }
 
-        // Accumulate samples while held and buffer not full
-        if (sPttActive && M5.BtnA.isPressed() && sPttSamples < PTT_MAX) {
-            int chunk = min(512, PTT_MAX - sPttSamples);
-            M5.Mic.record(&sPttBuf[sPttSamples], chunk, PTT_RATE);
-            sPttSamples += chunk;
+        // Commit to PTT after 200ms hold — show LISTENING (purple). By now the
+        // transient prime is done, so purple still means "capturing clean".
+        if (M5.BtnA.isPressed() && sPttActive && !sPttArmed && (millis() - sBtnADownAt) >= 200) {
+            sPttArmed = true;
+            irisFace.setState(IrisState::LISTENING);
             irisFace.update();
         }
 
-        // Dispatch when button released OR buffer full
+        // Stream capture while held: record() is double-buffered/non-blocking and
+        // fills in FIFO order, so discarding the first PTT_PRIME samples into a
+        // scratch buffer guarantees the transient never reaches sPttBuf — the
+        // first real chunk queues behind (and fills after) the discarded ones.
+        if (sPttActive && M5.BtnA.isPressed() && sPttSamples < PTT_MAX) {
+            static int16_t primeScratch[512];
+            if (sPttPrimeLeft > 0) {
+                int c = min(512, sPttPrimeLeft);
+                M5.Mic.record(primeScratch, c, PTT_RATE);
+                sPttPrimeLeft -= c;
+            } else {
+                int chunk = min(512, PTT_MAX - sPttSamples);
+                M5.Mic.record(&sPttBuf[sPttSamples], chunk, PTT_RATE);
+                sPttSamples += chunk;
+            }
+            irisFace.update();
+        }
+
+        // Release (or buffer full): dispatch only if we committed to PTT (armed).
+        // A release before arm is a short tap — discard the capture and fall
+        // through to the canned-prompt path below.
         if (sPttActive && (!M5.BtnA.isPressed() || sPttSamples >= PTT_MAX)) {
             sPttActive = false;
             M5.Mic.end();
             M5.Speaker.end();
             M5.Speaker.begin();
             M5.Speaker.setVolume(IRIS_VOL_LEVELS[irisWifi.getVolIdx()]);   // Volume preset
-            if (sPttBuf && sPttSamples > 0)
+            if (sPttArmed && sPttBuf && sPttSamples > 0)
                 irisPh3b3.doPtt(&sPttBuf, sPttSamples);
             if (sPttBuf) { free(sPttBuf); sPttBuf = nullptr; }
         }
