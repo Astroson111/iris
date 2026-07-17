@@ -34,7 +34,14 @@
 #define NVS_KEY_VOLUME         "vol"
 #define NVS_KEY_MIC            "mic"
 static const int   IRIS_VOL_LEVELS[3]   = {102, 178, 255};  // Low 40% / Med 70% / High 100% of M5.Speaker
-static const int   IRIS_MIC_LEVELS[3]   = {8, 16, 32};      // Low / Med(=16, current) / High mic magnification
+// Mic makeup gain per preset, applied in SOFTWARE through a tanh soft-limiter
+// (see MIC_LIMIT_CEIL in Iris.ino), NOT as hardware magnification. Capture runs
+// at unity mag so the raw signal keeps full headroom; the makeup gain is then
+// applied per-sample and loud peaks compress smoothly toward the ceiling instead
+// of hard-clipping the −32752 rail (old ×16 hardware mag clipped 14–18% of loud
+// samples, and even ×8 clipped 2–9% at close range — diagnosed 2026-07-17).
+// Quiet speech stays ~linear ×G; all three presets are now clip-safe at any SPL.
+static const int   IRIS_MIC_LEVELS[3]   = {4, 8, 16};       // Low ×4 / Med ×8 (default) / High ×16 makeup gain
 static const char* IRIS_PRESET_NAMES[3] = {"Low", "Medium", "High"};
 static const int   IRIS_AUDIO_DEFAULT   = 1;                // Medium for both (fresh enrollment never silent/blasting/deaf)
 

@@ -41,6 +41,18 @@ static void goToSleep(const char* reason) {
 
 static const int PTT_RATE = 16000;
 static const int PTT_MAX  = PTT_RATE * 12;  // 12 s @ 16 kHz
+// Mic-prime: the first DMA buffers after M5.Mic.begin() come back pinned to the
+// −32752 rail (bit-identical across captures — a hardware settling transient,
+// not voice; diagnosed 2026-07-17). Capture starts at button-press; these first
+// samples are streamed into a scratch buffer and DISCARDED so the transient
+// never enters sPttBuf / the WAV, while everything after is kept. 150 ms is the
+// verified-clean depth (2026-07-17 after-fix set: no rail run survived it).
+static const int PTT_PRIME = PTT_RATE * 150 / 1000;  // 2400 samples ≈ 150 ms
+// Soft-limiter ceiling: capture is at unity mag (headroom kept), then makeup gain
+// (IRIS_MIC_LEVELS) is applied per-sample as y = CEIL*tanh(G*x/CEIL) so loud peaks
+// compress toward ±CEIL and never reach the ±32752 hard-clip rail. Sits below
+// INT16_MAX to leave a margin the tanh asymptote never crosses.
+static const float MIC_LIMIT_CEIL = 32000.0f;
 
 void setup() {
     // Cache reset reason before anything can change it.
@@ -134,48 +146,78 @@ void loop() {
     static bool     sPttActive  = false;  // true while mic is recording
     static int16_t* sPttBuf     = nullptr;
     static int      sPttSamples = 0;
+    static int      sPttPrimeLeft = 0;    // transient samples still to discard (streamed)
 
     if (WiFi.status() == WL_CONNECTED) {
-        // Track press start
+        // Press: begin capturing IMMEDIATELY so no opening speech is lost. We
+        // don't yet know if this is a PTT (hold) or a short tap — capture into
+        // sPttBuf regardless; the 200ms arm check below decides, and a short tap
+        // discards the buffer. The mic's begin() startup transient (first
+        // PTT_PRIME samples — a −32752 rail burst, see PTT_PRIME) is discarded as
+        // it streams in; everything after is KEPT. This recovers the 200ms
+        // arm-hold window that an at-arm prime would otherwise swallow, so a user
+        // who talks the instant they press only loses the ~transient, not 350ms.
         if (M5.BtnA.wasPressed()) {
-            sBtnADownAt = millis();
-            sPttArmed   = false;
-        }
-
-        // Arm mic after 200ms hold
-        if (M5.BtnA.isPressed() && !sPttArmed && (millis() - sBtnADownAt) >= 200) {
-            sPttArmed   = true;
-            sPttSamples = 0;
+            sBtnADownAt   = millis();
+            sPttArmed     = false;
+            sPttSamples   = 0;
+            sPttPrimeLeft = PTT_PRIME;
             sPttBuf = (int16_t*)heap_caps_malloc(PTT_MAX * 2, MALLOC_CAP_SPIRAM);
             if (sPttBuf) {
                 sPttActive = true;
                 if (M5.Speaker.isPlaying()) M5.Speaker.stop();
                 auto mc = M5.Mic.config();
                 mc.sample_rate   = PTT_RATE;
-                mc.magnification = IRIS_MIC_LEVELS[irisWifi.getMicIdx()];   // Mic preset (Med=16=prior)
+                mc.magnification = 1;   // unity: keep headroom; gain is soft-limited in SW (see below)
                 M5.Mic.config(mc);
                 M5.Mic.begin();
-                irisFace.setState(IrisState::LISTENING);
-                irisFace.update();
             }
         }
 
-        // Accumulate samples while held and buffer not full
-        if (sPttActive && M5.BtnA.isPressed() && sPttSamples < PTT_MAX) {
-            int chunk = min(512, PTT_MAX - sPttSamples);
-            M5.Mic.record(&sPttBuf[sPttSamples], chunk, PTT_RATE);
-            sPttSamples += chunk;
+        // Commit to PTT after 200ms hold — show LISTENING (purple). By now the
+        // transient prime is done, so purple still means "capturing clean".
+        if (M5.BtnA.isPressed() && sPttActive && !sPttArmed && (millis() - sBtnADownAt) >= 200) {
+            sPttArmed = true;
+            irisFace.setState(IrisState::LISTENING);
             irisFace.update();
         }
 
-        // Dispatch when button released OR buffer full
+        // Stream capture while held: record() is double-buffered/non-blocking and
+        // fills in FIFO order, so discarding the first PTT_PRIME samples into a
+        // scratch buffer guarantees the transient never reaches sPttBuf — the
+        // first real chunk queues behind (and fills after) the discarded ones.
+        if (sPttActive && M5.BtnA.isPressed() && sPttSamples < PTT_MAX) {
+            static int16_t primeScratch[512];
+            if (sPttPrimeLeft > 0) {
+                int c = min(512, sPttPrimeLeft);
+                M5.Mic.record(primeScratch, c, PTT_RATE);
+                sPttPrimeLeft -= c;
+            } else {
+                int chunk = min(512, PTT_MAX - sPttSamples);
+                M5.Mic.record(&sPttBuf[sPttSamples], chunk, PTT_RATE);
+                // Soft-limit: raw capture (unity mag) has headroom; apply makeup
+                // gain through a tanh knee so quiet speech is ~linear ×G while loud
+                // peaks compress toward ±MIC_LIMIT_CEIL instead of hard-clipping.
+                const float g = (float)IRIS_MIC_LEVELS[irisWifi.getMicIdx()];
+                for (int i = sPttSamples; i < sPttSamples + chunk; i++) {
+                    float v = g * (float)sPttBuf[i];
+                    sPttBuf[i] = (int16_t)(MIC_LIMIT_CEIL * tanhf(v / MIC_LIMIT_CEIL));
+                }
+                sPttSamples += chunk;
+            }
+            irisFace.update();
+        }
+
+        // Release (or buffer full): dispatch only if we committed to PTT (armed).
+        // A release before arm is a short tap — discard the capture and fall
+        // through to the canned-prompt path below.
         if (sPttActive && (!M5.BtnA.isPressed() || sPttSamples >= PTT_MAX)) {
             sPttActive = false;
             M5.Mic.end();
             M5.Speaker.end();
             M5.Speaker.begin();
             M5.Speaker.setVolume(IRIS_VOL_LEVELS[irisWifi.getVolIdx()]);   // Volume preset
-            if (sPttBuf && sPttSamples > 0)
+            if (sPttArmed && sPttBuf && sPttSamples > 0)
                 irisPh3b3.doPtt(&sPttBuf, sPttSamples);
             if (sPttBuf) { free(sPttBuf); sPttBuf = nullptr; }
         }
