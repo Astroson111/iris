@@ -41,6 +41,11 @@ static void goToSleep(const char* reason) {
 
 static const int PTT_RATE = 16000;
 static const int PTT_MAX  = PTT_RATE * 12;  // 12 s @ 16 kHz
+// Mic-prime: the first DMA buffers after M5.Mic.begin() come back pinned to the
+// −32752 rail (bit-identical across captures — a hardware settling transient,
+// not voice; diagnosed 2026-07-17). Record and DISCARD this many samples before
+// accumulating so the transient never enters sPttBuf / the WAV. 150 ms @ 16 kHz.
+static const int PTT_PRIME = PTT_RATE * 150 / 1000;  // 2400 samples ≈ 150 ms
 
 void setup() {
     // Cache reset reason before anything can change it.
@@ -152,9 +157,22 @@ void loop() {
                 if (M5.Speaker.isPlaying()) M5.Speaker.stop();
                 auto mc = M5.Mic.config();
                 mc.sample_rate   = PTT_RATE;
-                mc.magnification = IRIS_MIC_LEVELS[irisWifi.getMicIdx()];   // Mic preset (Med=16=prior)
+                mc.magnification = IRIS_MIC_LEVELS[irisWifi.getMicIdx()];   // Mic preset (Med=×8, see config.h)
                 M5.Mic.config(mc);
                 M5.Mic.begin();
+                // Prime: record and DISCARD the mic startup transient (PTT_PRIME)
+                // so the first samples that reach sPttBuf are clean. record() is
+                // double-buffered/non-blocking, so we drain isRecording() to
+                // guarantee those buffers are fully captured (and thrown away)
+                // before real accumulation. Costs ~150 ms; LISTENING (purple) is
+                // shown only AFTER, so it doubles as the "capturing now" ready cue.
+                static int16_t primeScratch[512];
+                for (int primed = 0; primed < PTT_PRIME; ) {
+                    int c = min(512, PTT_PRIME - primed);
+                    M5.Mic.record(primeScratch, c, PTT_RATE);
+                    primed += c;
+                }
+                while (M5.Mic.isRecording()) M5.delay(1);
                 irisFace.setState(IrisState::LISTENING);
                 irisFace.update();
             }
