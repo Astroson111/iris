@@ -48,6 +48,11 @@ static const int PTT_MAX  = PTT_RATE * 12;  // 12 s @ 16 kHz
 // never enters sPttBuf / the WAV, while everything after is kept. 150 ms is the
 // verified-clean depth (2026-07-17 after-fix set: no rail run survived it).
 static const int PTT_PRIME = PTT_RATE * 150 / 1000;  // 2400 samples ≈ 150 ms
+// Soft-limiter ceiling: capture is at unity mag (headroom kept), then makeup gain
+// (IRIS_MIC_LEVELS) is applied per-sample as y = CEIL*tanh(G*x/CEIL) so loud peaks
+// compress toward ±CEIL and never reach the ±32752 hard-clip rail. Sits below
+// INT16_MAX to leave a margin the tanh asymptote never crosses.
+static const float MIC_LIMIT_CEIL = 32000.0f;
 
 void setup() {
     // Cache reset reason before anything can change it.
@@ -163,7 +168,7 @@ void loop() {
                 if (M5.Speaker.isPlaying()) M5.Speaker.stop();
                 auto mc = M5.Mic.config();
                 mc.sample_rate   = PTT_RATE;
-                mc.magnification = IRIS_MIC_LEVELS[irisWifi.getMicIdx()];   // Mic preset (Med=×8, see config.h)
+                mc.magnification = 1;   // unity: keep headroom; gain is soft-limited in SW (see below)
                 M5.Mic.config(mc);
                 M5.Mic.begin();
             }
@@ -190,6 +195,14 @@ void loop() {
             } else {
                 int chunk = min(512, PTT_MAX - sPttSamples);
                 M5.Mic.record(&sPttBuf[sPttSamples], chunk, PTT_RATE);
+                // Soft-limit: raw capture (unity mag) has headroom; apply makeup
+                // gain through a tanh knee so quiet speech is ~linear ×G while loud
+                // peaks compress toward ±MIC_LIMIT_CEIL instead of hard-clipping.
+                const float g = (float)IRIS_MIC_LEVELS[irisWifi.getMicIdx()];
+                for (int i = sPttSamples; i < sPttSamples + chunk; i++) {
+                    float v = g * (float)sPttBuf[i];
+                    sPttBuf[i] = (int16_t)(MIC_LIMIT_CEIL * tanhf(v / MIC_LIMIT_CEIL));
+                }
                 sPttSamples += chunk;
             }
             irisFace.update();
