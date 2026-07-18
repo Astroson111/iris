@@ -24,10 +24,15 @@ class IrisPh3b3 {
     int           _port         = 0;
     String        _sessionId;
     unsigned long _lastMs       = 0;
+    unsigned long _hbLastMs     = 0;      // last Argus heartbeat POST
     bool          _greetedOnce  = false;
     uint32_t      _greetClearMs = 0;
 
     // Returns the HTTP status code from GET /health, or a negative value on a
     // connection-level failure (no route / TLS / timeout). 2xx = healthy.
     int _checkHealth();
+
+    // Argus: POST a tiny status JSON to /argus/heartbeat (battery, RSSI, uptime,
+    // firmware hash, free heap). Fire-and-forget; failures are non-fatal.
+    void _sendHeartbeat();
 };

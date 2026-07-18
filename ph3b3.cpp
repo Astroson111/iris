@@ -1,4 +1,5 @@
 #include "ph3b3.h"
+#include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
@@ -53,6 +54,12 @@ void IrisPh3b3::update() {
         _greetClearMs = 0;
     }
 
+    // Argus fleet heartbeat — its own cadence, independent of the health-poll gate.
+    if (millis() - _hbLastMs >= ARGUS_HEARTBEAT_MS) {
+        _hbLastMs = millis();
+        _sendHeartbeat();
+    }
+
     if (millis() - _lastMs < PH3B3_POLL_MS) return;
     _lastMs = millis();
 
@@ -78,6 +85,32 @@ void IrisPh3b3::update() {
         _greetedOnce = false;
         _greetClearMs = 0;
     }
+}
+
+// ─── Argus heartbeat ──────────────────────────────────────────────────────────
+// Tiny status POST to /argus/heartbeat, riding the verified check-in path (Basic
+// auth + X-Ph3b3-Device: iris — the server IP-pins only Dio, and trusts Iris via
+// the shared cred). Fire-and-forget: any failure is silently ignored so a flaky
+// network never stalls the UI. Payload stays well under 200 B.
+void IrisPh3b3::_sendHeartbeat() {
+    if (WiFi.status() != WL_CONNECTED) return;
+    WiFiClientSecure tls;
+    tls.setInsecure();
+    HTTPClient http;
+    String url = "https://" + _host + ":" + String(_port) + "/argus/heartbeat";
+    if (!http.begin(tls, url)) return;
+    http.setConnectTimeout(4000);
+    http.setTimeout(4000);
+    http.setAuthorization(PH3B3_AUTH_USER, PH3B3_AUTH_PASS);
+    http.addHeader("Content-Type", "application/json");
+    http.addHeader("X-Ph3b3-Device", "iris");
+    char body[192];
+    int n = snprintf(body, sizeof(body),
+        "{\"battery\":%d,\"rssi\":%d,\"uptime\":%lu,\"firmware_hash\":\"%s\",\"free_heap\":%u}",
+        (int)M5.Power.getBatteryLevel(), (int)WiFi.RSSI(),
+        (unsigned long)(millis() / 1000UL), ARGUS_FW_HASH, (unsigned)ESP.getFreeHeap());
+    http.POST((uint8_t*)body, n);
+    http.end();
 }
 
 // ─── doChat ──────────────────────────────────────────────────────────────────

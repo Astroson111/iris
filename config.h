@@ -60,3 +60,11 @@ static const int   IRIS_AUDIO_DEFAULT   = 1;                // Medium for both (
 #define WIFI_PH3B3_TIMEOUT_MS  60000UL                // 60 s patience window
 #define SLEEP_RETRY_US         (5ULL * 60 * 1000000)  // 5-min deep-sleep timer
 #define SLEEP_WAKE_GPIO        39                     // BtnA — RTC-capable on S3
+
+// ── Argus fleet heartbeat ─────────────────────────────────────────────────────
+// Iris POSTs a tiny status JSON to Ph3b3's /argus/heartbeat on this cadence,
+// riding the SAME verified check-in path as PTT (Basic auth + X-Ph3b3-Device:
+// iris). Well inside the battery-badge silent contract (900 s). ARGUS_FW_HASH
+// identifies this build for the panel's firmware-drift check.
+#define ARGUS_HEARTBEAT_MS     60000UL                // 60 s between heartbeats
+#define ARGUS_FW_HASH          "iris-8390ddf"         // soft-limiter build id
