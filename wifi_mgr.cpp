@@ -173,7 +173,11 @@ void IrisWifi::_runPortal() {
         page += F("'></div><div><label>Port</label>"
                   "<input name='ph3b3port' value='");
         page += String(_ph3b3Port);
-        page += F("'></div></div></div>");
+        page += F("'></div></div>"
+                  "<label>Device key</label>"
+                  "<input name='svrkey' type='password' placeholder='(blank keeps saved key)'>"
+                  "<small>Pairing key from the Ph3b3 portal &rarr; Status &rarr; this device's setup.</small>"
+                  "</div>");
         // Audio presets — three-way selects, pre-selected to the stored values.
         page += F("<div class='srv'><h3>Audio</h3><div class='row2'>"
                   "<div><label>Volume</label><select name='vol'>");
@@ -267,6 +271,16 @@ void IrisWifi::_runPortal() {
             _savePrefs(newHost.c_str(), newPort);
         }
 
+        // Ph3b3 device key — blank keeps the saved key (parallel to Wi-Fi passwords).
+        String newKey = server.arg("svrkey");
+        newKey.trim();
+        if (newKey.length() > 0) {
+            _svrKey = newKey;
+            Preferences p; p.begin(NVS_NAMESPACE, /*readOnly=*/false);
+            p.putString(NVS_KEY_SVRKEY, newKey);
+            p.end();
+        }
+
         // Audio presets — store selected indices (Medium if the field is absent).
         {
             String vArg = server.arg("vol"), mArg = server.arg("mic");
@@ -339,6 +353,9 @@ void IrisWifi::_loadPrefs() {
     _ph3b3Port = p.getInt(NVS_KEY_PORT, PH3B3_FALLBACK_PORT);
     _volIdx    = constrain(p.getInt(NVS_KEY_VOLUME, IRIS_AUDIO_DEFAULT), 0, 2);
     _micIdx    = constrain(p.getInt(NVS_KEY_MIC,    IRIS_AUDIO_DEFAULT), 0, 2);
+    // No stored key yet → fall back to the baked PH3B3_AUTH_PASS, which the server
+    // grandfathered as this device's key, so a not-yet-paired device still connects.
+    _svrKey    = p.getString(NVS_KEY_SVRKEY, PH3B3_AUTH_PASS);
     p.end();
 }
 

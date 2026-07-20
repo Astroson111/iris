@@ -36,10 +36,13 @@ static void buildWavHeader(uint8_t* h, int samples, int rate) {
 static char    s_peek[6145];    // first 6KB of /chat response — captures full JSON header
 static int16_t s_pcm[2][1024];  // double-buffer for streaming PCM playback
 
-void IrisPh3b3::begin(IrisFace* face, const String& host, int port) {
+void IrisPh3b3::begin(IrisFace* face, const String& host, int port, const String& authPass) {
     _face = face;
     _host = host;
     _port = port;
+    // Per-device auth key from NVS (set in the setup portal). Empty → baked
+    // PH3B3_AUTH_PASS, which the server grandfathered as this device's key.
+    _authPass = authPass.length() ? authPass : String(PH3B3_AUTH_PASS);
     _sessionId = "iris-" + String(esp_random(), HEX);
     _lastMs = millis() - PH3B3_POLL_MS;   // trigger first check immediately
     // STEP 0 visibility (serial is dead): show the active target on boot so the
@@ -101,7 +104,7 @@ void IrisPh3b3::_sendHeartbeat() {
     if (!http.begin(tls, url)) return;
     http.setConnectTimeout(4000);
     http.setTimeout(4000);
-    http.setAuthorization(PH3B3_AUTH_USER, PH3B3_AUTH_PASS);
+    http.setAuthorization(PH3B3_AUTH_USER, _authPass.c_str());
     http.addHeader("Content-Type", "application/json");
     http.addHeader("X-Ph3b3-Device", "iris");
     char body[192];
@@ -266,7 +269,7 @@ void IrisPh3b3::doChat(const String& message) {
     }
     http.setConnectTimeout(20000);
     http.setTimeout(60000);
-    http.setAuthorization(PH3B3_AUTH_USER, PH3B3_AUTH_PASS);
+    http.setAuthorization(PH3B3_AUTH_USER, _authPass.c_str());
     http.addHeader("Content-Type", "application/json");
     http.addHeader("X-Ph3b3-Device", "iris");
 
@@ -321,7 +324,7 @@ void IrisPh3b3::doChat(const String& message) {
             if (!http.begin(tls, path)) break;
             http.setConnectTimeout(20000);
             http.setTimeout(60000);
-            http.setAuthorization(PH3B3_AUTH_USER, PH3B3_AUTH_PASS);
+            http.setAuthorization(PH3B3_AUTH_USER, _authPass.c_str());
             http.addHeader("X-Ph3b3-Device", "iris");
             int gc = http.GET();
             if (gc != HTTP_CODE_OK) { http.end(); break; }
@@ -424,7 +427,7 @@ void IrisPh3b3::doPtt(int16_t** ppAudio, int numSamples) {
     }
     http.setConnectTimeout(20000);
     http.setTimeout(20000);
-    http.setAuthorization(PH3B3_AUTH_USER, PH3B3_AUTH_PASS);
+    http.setAuthorization(PH3B3_AUTH_USER, _authPass.c_str());
     http.addHeader("Content-Type", "application/json");
     http.addHeader("X-Ph3b3-Device", "iris");
 
@@ -470,7 +473,7 @@ int IrisPh3b3::_checkHealth() {
     // 5 s can race the TLS handshake. http.setTimeout() alone is not enough.
     http.setConnectTimeout(15000);
     http.setTimeout(15000);
-    http.setAuthorization(PH3B3_AUTH_USER, PH3B3_AUTH_PASS);
+    http.setAuthorization(PH3B3_AUTH_USER, _authPass.c_str());
 
     int code = http.GET();
     http.end();

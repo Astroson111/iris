@@ -27,6 +27,7 @@
 #define NVS_KEY_HOST           "ph3b3host"
 #define NVS_KEY_PORT           "ph3b3port"
 #define NVS_KEY_WIFI_COUNT     "wifi_count"
+#define NVS_KEY_SVRKEY         "svrkey"        // per-device Ph3b3 auth key (Basic-auth password); empty → baked PH3B3_AUTH_PASS
 // Per-slot keys built at runtime: "wifi_ssid_0".."wifi_ssid_3", "wifi_pass_0".."wifi_pass_3"
 
 // ── Audio presets (Volume / Mic gain) — set in the setup portal, NVS-persisted ─

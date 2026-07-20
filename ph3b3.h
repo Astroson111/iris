@@ -6,7 +6,7 @@
 // Keeps the avatar expression in sync with Ph3b3's reachability.
 class IrisPh3b3 {
  public:
-    void begin(IrisFace* face, const String& host, int port);
+    void begin(IrisFace* face, const String& host, int port, const String& authPass);
 
     // Call every loop iteration.  Runs a health check every PH3B3_POLL_MS ms.
     void update();
@@ -22,6 +22,7 @@ class IrisPh3b3 {
     IrisFace*     _face         = nullptr;
     String        _host;
     int           _port         = 0;
+    String        _authPass;               // per-device Basic-auth password (from NVS; baked fallback)
     String        _sessionId;
     unsigned long _lastMs       = 0;
     unsigned long _hbLastMs     = 0;      // last Argus heartbeat POST

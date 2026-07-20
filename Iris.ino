@@ -127,7 +127,7 @@ void setup() {
     }
 
     irisFace.setState(IrisState::PH3B3_SEARCHING);
-    irisPh3b3.begin(&irisFace, irisWifi.getPh3b3Host(), irisWifi.getPh3b3Port());
+    irisPh3b3.begin(&irisFace, irisWifi.getPh3b3Host(), irisWifi.getPh3b3Port(), irisWifi.getServerKey());
 }
 
 void loop() {
