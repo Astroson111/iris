@@ -36,4 +36,8 @@ class IrisPh3b3 {
     // Argus: POST a tiny status JSON to /argus/heartbeat (battery, RSSI, uptime,
     // firmware hash, free heap). Fire-and-forget; failures are non-fatal.
     void _sendHeartbeat();
+
+    // Drive the M5 Unit AudioPlayer from a parsed server device_command
+    // (play_track / stop / volume_up / volume_down); skips the chat/TTS path.
+    void _handleDeviceCommand(const String& action, int index, const String& speak);
 };

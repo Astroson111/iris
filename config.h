@@ -68,4 +68,4 @@ static const int   IRIS_AUDIO_DEFAULT   = 1;                // Medium for both (
 // iris). Well inside the battery-badge silent contract (900 s). ARGUS_FW_HASH
 // identifies this build for the panel's firmware-drift check.
 #define ARGUS_HEARTBEAT_MS     60000UL                // 60 s between heartbeats
-#define ARGUS_FW_HASH          "iris-8390ddf"         // soft-limiter build id
+#define ARGUS_FW_HASH          "iris-trackplay"       // track-playback + server-key + soft-limiter
