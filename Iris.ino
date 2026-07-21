@@ -85,6 +85,7 @@ void setup() {
         }
         if (ok) {
             audioplayer.setPlayMode(AUDIO_PLAYER_MODE_SINGLE_STOP);   // play once & stop (no loop-all)
+            audioplayer.setVolume(20);                                // the unit powers up MUTED (vol 0); 0..30
             g_trackTotal = audioplayer.getTotalAudioNumber();
         }
         char sd[24];

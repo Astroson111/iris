@@ -487,7 +487,10 @@ void IrisPh3b3::_handleDeviceCommand(const String& action, int index, const Stri
             _face->setStatusLine(msg);
             return;
         }
-        audioplayer.playAudioByIndex((uint16_t)index);
+        // selectAudioNum + playAudio is the unit's proven sequence — playAudioByIndex
+        // alone left it STOPPED. Volume is set at boot (the unit powers up muted).
+        audioplayer.selectAudioNum((uint16_t)index);
+        audioplayer.playAudio();
     } else if (action == "stop") {
         audioplayer.endAudio();
     } else if (action == "volume_up") {
