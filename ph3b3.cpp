@@ -4,7 +4,11 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <M5Unified.h>
+#include <unit_audioplayer.hpp>
 #include "config.h"
+
+extern AudioPlayerUnit audioplayer;   // defined in Iris.ino (M5 Unit AudioPlayer on Grove A)
+extern uint16_t        g_trackTotal;  // tracks on the AudioPlayer SD (0 = unknown / unit absent)
 
 // ─── Base64 helpers (PTT audio encode/decode) ────────────────────────────────
 
@@ -441,6 +445,17 @@ void IrisPh3b3::doPtt(int16_t** ppAudio, int numSamples) {
         deserializeJson(doc, body);
         const char* t = doc["text"];
         if (t && *t) heard = String(t);
+        // Device command (Iris track playback) → drive the AudioPlayer and SKIP
+        // the chat/TTS path entirely. Copy values out before doc/body go away.
+        JsonObjectConst dcmd = doc["device_command"];
+        if (!dcmd.isNull()) {
+            String action = dcmd["action"] | "";
+            int    index  = dcmd["index"]  | 0;
+            String speak  = doc["speak"]   | "";
+            http.end();
+            _handleDeviceCommand(action, index, speak);
+            return;
+        }
     }
     http.end();
 
@@ -457,6 +472,33 @@ void IrisPh3b3::doPtt(int16_t** ppAudio, int numSamples) {
     _face->clearBubble();
 
     doChat(heard);
+}
+
+// Drive the M5 Unit AudioPlayer from a server device_command. The unit decodes on
+// its own chip and plays INDEPENDENTLY of Iris, so this returns at once and the
+// chat completion-timer never treats playback as "response audio".
+void IrisPh3b3::_handleDeviceCommand(const String& action, int index, const String& speak) {
+    _face->setState(IrisState::PH3B3_HEALTHY);
+    if (action == "play_track") {
+        // Range-check against the SD track count — Iris owns that truth.
+        if (g_trackTotal > 0 && (index < 1 || index > (int)g_trackTotal)) {
+            char msg[28];
+            snprintf(msg, sizeof(msg), "No track %d (%u on SD)", index, g_trackTotal);
+            _face->setStatusLine(msg);
+            return;
+        }
+        audioplayer.playAudioByIndex((uint16_t)index);
+    } else if (action == "stop") {
+        audioplayer.endAudio();
+    } else if (action == "volume_up") {
+        audioplayer.increaseVolume();
+    } else if (action == "volume_down") {
+        audioplayer.decreaseVolume();
+    } else {
+        return;   // unknown action — no-op
+    }
+    // Phase 1 confirmation: show the server's line on the status display.
+    _face->setStatusLine(speak.length() ? speak.c_str() : action.c_str());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
