@@ -111,10 +111,17 @@ void IrisPh3b3::_sendHeartbeat() {
     http.setAuthorization(PH3B3_AUTH_USER, _authPass.c_str());
     http.addHeader("Content-Type", "application/json");
     http.addHeader("X-Ph3b3-Device", "iris");
-    char body[192];
+    // Battery + charging (M5Unified PMIC). Unavailable → JSON null, never a guess.
+    int32_t _lvl = M5.Power.getBatteryLevel();
+    char batStr[8];
+    if (_lvl < 0 || _lvl > 100) strcpy(batStr, "null");
+    else snprintf(batStr, sizeof(batStr), "%ld", (long)_lvl);
+    int _chg = (int)M5.Power.isCharging();          // 0=discharging 1=charging 2=unknown
+    const char* chgStr = (_chg == 1) ? "true" : (_chg == 0) ? "false" : "null";
+    char body[224];
     int n = snprintf(body, sizeof(body),
-        "{\"battery\":%d,\"rssi\":%d,\"uptime\":%lu,\"firmware_hash\":\"%s\",\"free_heap\":%u}",
-        (int)M5.Power.getBatteryLevel(), (int)WiFi.RSSI(),
+        "{\"battery\":%s,\"charging\":%s,\"rssi\":%d,\"uptime\":%lu,\"firmware_hash\":\"%s\",\"free_heap\":%u}",
+        batStr, chgStr, (int)WiFi.RSSI(),
         (unsigned long)(millis() / 1000UL), ARGUS_FW_HASH, (unsigned)ESP.getFreeHeap());
     http.POST((uint8_t*)body, n);
     http.end();
