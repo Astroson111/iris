@@ -13,6 +13,9 @@ static void _wifiJoin(const char* ssid, const char* pass) {
     WiFi.mode(WIFI_OFF);
     delay(400);
     WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);   // no WiFi modem power-save (WIFI_PS_NONE): the periodic
+                            // radio wake spikes were tripping the AXP2101 brownout
+                            // on marginal supplies. Trades steady draw for stability.
     WiFi.setAutoReconnect(false);
     wifi_config_t conf = {};
     strlcpy((char*)conf.sta.ssid,     ssid, sizeof(conf.sta.ssid));

@@ -281,6 +281,7 @@ void loop() {
                 WiFi.mode(WIFI_OFF);
                 delay(100);
                 WiFi.mode(WIFI_STA);
+                WiFi.setSleep(false);   // reassert no-modem-sleep after a re-init
             }
         }
     } else {
