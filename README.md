@@ -57,7 +57,7 @@ curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.
     https://static-cdn.m5stack.com/resource/arduino/package_m5stack_index.json
 ~/.local/bin/arduino-cli core update-index
 ~/.local/bin/arduino-cli core install m5stack:esp32
-~/.local/bin/arduino-cli lib install M5Unified M5GFX "M5Stack_Avatar" "WiFiManager" M5UnitAudioPlayer
+~/.local/bin/arduino-cli lib install M5Unified M5GFX "M5Stack_Avatar" "WiFiManager"
 
 # Compile
 ~/.local/bin/arduino-cli compile --fqbn m5stack:esp32:m5stack_sticks3 ~/Arduino/Iris

@@ -7,7 +7,6 @@
  */
 
 #include <M5Unified.h>
-#include <unit_audioplayer.hpp>
 #include <WiFi.h>
 #include <esp_sleep.h>
 
@@ -19,8 +18,6 @@
 IrisFace   irisFace;
 IrisWifi   irisWifi;
 IrisPh3b3  irisPh3b3;
-AudioPlayerUnit audioplayer;       // M5 Unit AudioPlayer on Grove Port A (voice track playback)
-uint16_t        g_trackTotal = 0;  // tracks on its microSD (0 = unit absent / unknown)
 
 static void faceDelay(uint32_t ms) {
     uint32_t end = millis() + ms;
@@ -70,28 +67,6 @@ void setup() {
     M5.Speaker.setVolume(IRIS_VOL_LEVELS[irisWifi.getVolIdx()]);   // Medium default until NVS loads
 
     irisFace.begin();
-
-    // ── M5 Unit AudioPlayer (Grove Port A, UART @ 9600) — track playback ──────
-    // Grove 5V bus MUST be on or the unit is dead on battery. Bounded retry (not
-    // the example's infinite while) so Iris still boots if the unit is absent.
-    M5.Power.setExtOutput(true);
-    {
-        int8_t rx = M5.getPin(m5::pin_name_t::port_a_pin1);
-        int8_t tx = M5.getPin(m5::pin_name_t::port_a_pin2);
-        bool ok = false;
-        for (int i = 0; i < 10 && !ok; i++) {
-            ok = audioplayer.begin(&Serial1, rx, tx);
-            if (!ok) delay(100);
-        }
-        if (ok) {
-            audioplayer.setPlayMode(AUDIO_PLAYER_MODE_SINGLE_STOP);   // play once & stop (no loop-all)
-            g_trackTotal = audioplayer.getTotalAudioNumber();
-        }
-        char sd[24];
-        snprintf(sd, sizeof(sd), ok ? "SD: %u tracks" : "AudioPlayer: none", g_trackTotal);
-        irisFace.setState(IrisState::BOOT, sd);
-        faceDelay(1500);   // brief so the boot sanity check is actually seen
-    }
 
     // Show why we last rebooted — critical for diagnosing crash/brownout/WDT loops.
     char rrBuf[20];
@@ -312,7 +287,6 @@ void loop() {
         irisPh3b3.update();
     }
 
-    audioplayer.update();   // process the AudioPlayer's UART status responses
     irisFace.update();
     delay(20);
 }
